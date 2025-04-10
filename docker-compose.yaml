@@ -6,7 +6,8 @@ services:
     pid: "host"
     network_mode: "host"
     restart: on-failure
-    image: ghcr.io/ool-mddo/mddo-clab-docker:main
+    image: ${MDDO_CLAB_DOCKER_IMAGE}:${MDDO_CLAB_DOCKER_IMAGE_TAG}
+    #image: ghcr.io/ool-mddo/mddo-clab-docker:main
     working_dir: ${WORKERDIR}/clab
     volumes:
       - type: bind
@@ -30,7 +31,8 @@ services:
   eda-worker:
     privileged: true
     restart: on-failure
-    image: ghcr.io/ool-mddo/mddo-ansible-eda:main
+    image: ${ANSIBLE_EDA_IMAGE}:${ANSIBLE_EDA_IMAGE_TAG}
+    #image: ghcr.io/ool-mddo/mddo-ansible-eda:main
     ports:
       - target: 48090
         published: 48090
