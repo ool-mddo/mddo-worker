@@ -7,7 +7,6 @@ services:
     network_mode: "host"
     restart: on-failure
     image: ${MDDO_CLAB_DOCKER_IMAGE}:${MDDO_CLAB_DOCKER_IMAGE_TAG}
-    #image: ghcr.io/ool-mddo/mddo-clab-docker:main
     working_dir: ${WORKERDIR}/clab
     volumes:
       - type: bind
@@ -32,7 +31,6 @@ services:
     privileged: true
     restart: on-failure
     image: ${ANSIBLE_EDA_IMAGE}:${ANSIBLE_EDA_IMAGE_TAG}
-    #image: ghcr.io/ool-mddo/mddo-ansible-eda:main
     ports:
       - target: 48090
         published: 48090
@@ -64,7 +62,7 @@ services:
         target: /playbooks
     command: ["ansible-rulebook","-r","/eda/rulebook.yaml","-i","/eda/hosts","-vvvv"]
   node_exporter:
-    image: quay.io/prometheus/node-exporter:latest
+    image: quay.io/prometheus/node-exporter:v1.8.2
     container_name: node_exporter
     command:
       - '--path.rootfs=/host'
