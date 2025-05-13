@@ -10,6 +10,15 @@
     conductor_address: "{{ remote_address }}:15000"
 
   tasks:
+    - name: delete config file
+      shell: rm -f /clab/*.conf
+
+    - name: delete topo file
+      shell: rm  -f /clab/clab-topo.yaml
+
+    - name: delete iperf file
+      shell: rm -f /clab/iperf_params.json
+ 
     - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
     - name: "get convert table"
       uri:
