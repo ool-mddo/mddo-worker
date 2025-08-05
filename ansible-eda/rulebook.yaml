@@ -31,6 +31,7 @@
             snapshot_name: "{{ event.payload.snapshot_name }}"
             usecase_name: "{{ event.payload.usecase_name }}"
             with_clab: "true"
+            iperf_commands: "{{ event.payload.iperf_commands}}"
             remote_address: "{{ event.payload.remote_address }}"
     - name: clab destory
       condition: event.payload.message == "destroy"

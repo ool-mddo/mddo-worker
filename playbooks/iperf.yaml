@@ -55,17 +55,9 @@
       when:
         with_clab == "true"
 
-    - name: generate iperf command parameter
-      uri:
-        url: "http://{{ conductor_address }}/usecases/{{ usecase_name }}/{{ network_name }}/{{ snapshot_name }}/iperf_commands?flow_data=event"
-        method: GET
-        body_format: json
-      register:
-        iperf_commands
-
     - name: Save iperf commands data to a file
       copy:
-        content: "{{ iperf_commands.json }}"
+        content: "{{ iperf_commands }}"
         dest: "{{ iperf_params_file }}"
     - shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
