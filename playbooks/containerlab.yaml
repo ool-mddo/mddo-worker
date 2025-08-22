@@ -78,6 +78,10 @@
         cmd: "docker exec  mddo-clab-docker containerlab deploy --topo clab-topo.yaml --reconfigure"
       when: with_clab == "true"
 
+    - name: Pause for 30 sec to build app cache
+      ansible.builtin.pause:
+        seconds: 30        
+
     - name: enable bgp license
       shell:
         cmd: "docker exec  mddo-clab-docker containerlab exec --topo clab-topo.yaml --label clab-node-kind=juniper_crpd --cmd 'cli request system license add /tmp/license.key'"
