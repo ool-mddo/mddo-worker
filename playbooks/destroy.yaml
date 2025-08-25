@@ -14,7 +14,7 @@
 
     - name: "get clab topo yaml"
       uri:
-        url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro"
+        url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro&endpoint_image={{ endpoint_image }}"
         method: "GET"
         body_format: json
       register: containerlab

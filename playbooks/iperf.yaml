@@ -10,6 +10,11 @@
     conductor_address: "{{ remote_address }}:15000"
 
   tasks:
+    #- name: restart iperf node
+    #  shell: "docker exec  mddo-clab-docker {{ exec_container }}"
+    #  vars:
+    #    exec_container: "docker ps | grep clab | grep endpoint | cut -d ' ' -f 1 | xargs -INODE docker restart NODE --time=1"
+
     - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
     - name: "get convert table"
       uri:
@@ -55,17 +60,19 @@
       when:
         with_clab == "true"
 
-    - name: generate iperf command parameter
-      uri:
-        url: "http://{{ conductor_address }}/usecases/{{ usecase_name }}/{{ network_name }}/{{ snapshot_name }}/iperf_commands?flow_data=event"
-        method: GET
-        body_format: json
-      register:
-        iperf_commands
+    - name: iperf process stop
+      shell:
+        cmd: '{{ exec_container }} /bin/bash -c "pkill iperf"'
+      vars:
+        exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.containers[] | select( .name | contains (\"{{ item['node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
+      loop: "{{ iperf_list }}"
+      ignore_errors: true
+      when:
+        with_clab == "true"
 
     - name: Save iperf commands data to a file
       copy:
-        content: "{{ iperf_commands.json }}"
+        content: "{{ iperf_commands }}"
         dest: "{{ iperf_params_file }}"
     - shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 

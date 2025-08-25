@@ -18,7 +18,7 @@
 
     - name: delete iperf file
       shell: rm -f /clab/iperf_params.json
- 
+
     - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
     - name: "get convert table"
       uri:
@@ -26,7 +26,7 @@
         method: "GET"
         body_format: json
       register: layer3_convert_table
-    
+
     - name: download generated config
       shell: "curl {{ url }}/{{ item.agent_name }}.conf | jq -r .text > {{ filepath }}"
       vars:
@@ -43,7 +43,7 @@
 
     - name: "get clab topo yaml"
       uri:
-        url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro"
+        url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro&endpoint_image={{ endpoint_image }}"
         method: "GET"
         body_format: json
       register: containerlab
@@ -77,6 +77,10 @@
       shell:
         cmd: "docker exec  mddo-clab-docker containerlab deploy --topo clab-topo.yaml --reconfigure"
       when: with_clab == "true"
+
+    - name: Pause for 30 sec to build app cache
+      ansible.builtin.pause:
+        seconds: 30
 
     - name: enable bgp license
       shell:
