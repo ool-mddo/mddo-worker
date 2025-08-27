@@ -1,1 +1,1 @@
-job_status{jobname="Iperf Executing",network_name="mddo-bgp",snapshot_name="emulated_asis"} 1
+job_status{jobname="",network_name="",snapshot_name=""} 0
