@@ -1,1 +1,1 @@
-job_status{jobname="",network_name="",snapshot_name=""} 0
+job_status{jobname="execute  ovs-vsctl add-port br11 br11p1",network_name="mddo-bgp",snapshot_name="emulated_asis"} 1

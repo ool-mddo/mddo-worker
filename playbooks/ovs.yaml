@@ -1,0 +1,16 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    remote_address: localhost
+    conductor_address: "{{ remote_address }}:15000"
+
+  tasks:
+
+    - shell: 'echo "job_status{jobname=\"execute  ovs-vsctl {{ operation }} {{ bridge_name }} {{ port_name }}\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: "docker exec  mddo-clab-docker ovs-vsctl {{ operation }} {{ bridge_name }} {{ port_name }}"
+      shell:
+        cmd: "docker exec  mddo-clab-docker ovs-vsctl {{ operation }} {{ bridge_name }} {{ port_name }}"
+      ignore_errors: true
