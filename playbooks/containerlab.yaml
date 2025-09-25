@@ -90,3 +90,17 @@
 
     - shell: 'echo "job_status{jobname=\"Deploying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" >> /prom/textfile.prom'
 
+    - name: get interface list for empty node
+      uri:
+        url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/interfaces?node_name=Seg_empty00"
+        method: "GET"
+        body_format: json
+      register: shutdown_interface_response
+            
+    - name: extract l1_principal values
+      set_fact:
+        shutdown_interface_list: "{{ shutdown_interface_response.json.nodes[0].interfaces | map(attribute='alias.l1_principal') | list }}"
+
+    - name: shutdown interfaces
+      shell: "docker exec mddo-clab-docker ip link set {{ item }} down"
+      loop: "{{ shutdown_interface_list }}"
