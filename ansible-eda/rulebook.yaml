@@ -53,3 +53,15 @@
         shutdown:
           delay: 15
           message: "Shutting down"
+    - name: operate ovs bridge operation(ovs-vsctl add-port/del-port)
+      condition: event.payload.message == "ovs"
+      action:
+        run_playbook:
+          name: "/playbooks/ovs.yaml"
+          extra_vars:
+            network_name: "{{ event.payload.network_name }}"
+            snapshot_name: "{{ event.payload.snapshot_name }}"
+            usecase_name: "{{ event.payload.usecase_name }}"
+            operation: "{{ event.payload.operation }}"
+            bridge_name: "{{ event.payload.bridge_name }}"
+            port_name: "{{ event.payload.port_name }}"
