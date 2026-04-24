@@ -100,7 +100,7 @@
 
     - name: iperf client command (debug)
       debug:
-        msg: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log &"'
+        msg: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -u -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.1['client_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
       with_subelements:
@@ -109,7 +109,7 @@
 
     - name: iperf client command
       shell:
-        cmd: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log 2>&1 &"'
+        cmd: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -u -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log 2>&1 &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.1['client_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
       with_subelements:
