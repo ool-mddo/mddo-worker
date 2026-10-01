@@ -1,0 +1,334 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    with_clab: "{{ with_clab }}"
+    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    remote_address: localhost
+    conductor_address: "{{ remote_address }}:15000"
+    clusterid: 1
+  tasks:
+    - name: 実行対象のコンテナ名を取得
+      shell: >-
+        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "act") | .Names[]'
+      register: act_target
+      changed_when: false
+
+    - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
+      shell: |
+        docker exec -i {{ item }} bash -c '
+        mkdir -p /var/run/qemu-server
+        # 既にマウントされていなければ mount --bind を実行
+        if ! mountpoint -q /var/run/qemu-server; then
+          mount --bind /opt/qemu-shared /var/run/qemu-server
+        fi
+        '
+      loop: "{{ act_target.stdout_lines }}"
+      changed_when: false
+
+    - name: 取得したactのproxmoxコンテナに対して設定スクリプトを実行
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        set -e
+        rm -rf /tmp/vsrx-config
+        mkdir -p /tmp/vsrx-config
+
+        qm stop 100 || true
+        qm destroy 100 --purge true || true
+
+        # 1. OVF インポートと仮想マシン構成
+        qm importovf 100 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
+        qm set 100 --name vsrx1 --memory 4096 --cores 2 --cpu cputype=host --scsihw virtio-scsi-pci
+        qm set 100 --serial0 socket --vga serial0
+        qm set 100 --scsi0 local:100/vm-100-disk-0.qcow2
+
+        # 2. ブート順序は scsi0 のみ（記事では ide2 をブート対象に入れていません）
+        qm set 100 --boot "order=scsi0"
+
+        SCRIPT_EOF
+      loop: "{{ act_target.stdout_lines }}"
+      register: exec_results
+      changed_when: true
+
+          
+    - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        VMID=100
+
+        echo "=== Proxmox VE ネットワーク連続設定を開始 ==="
+
+        # 【修正箇所】 0..3 ではなく 0..4 にして vmbr0 から vmbr4 までの5つを作成する
+        echo "[1/3] コンテナ内に Linux Bridge (vmbr1〜vmbr4) を一括作成中..."
+        for i in {0..3}; do
+          ip link add name vmbr$((i + 1)) type bridge || true
+          ip link set vmbr$((i + 1)) up || true
+        done
+
+        # 2. Containerlabのethポート（eth0〜eth3）を vmbr1〜vmbr4 に収容
+        for i in {0..3}; do
+          ip link set eth$((i + 1 )) master vmbr$((i + 1)) || true
+          ip link set eth$((i + 1 )) up || true
+        done
+
+        # 3. ProxmoxのVM構成ファイルから古いネットワーク設定を掃除し、新規に一括書き込み
+        echo "[3/3] VM $VMID の構成ファイルに net0〜net3 を直接書き込み中..."
+
+        # 競合を防ぐため、既存の net0 〜 net3 の設定行を削除
+        for i in {0..3}; do
+          sed -i "/^net$i:/d" /etc/pve/qemu-server/$VMID.conf
+        done
+
+        # 新しい設定(net0:vmbr1 〜 net3:vmbr4)を一括追加
+        for i in {0..3}; do
+          sh -c "echo 'net$i: virtio,bridge=vmbr$((i+1))' >> /etc/pve/qemu-server/$VMID.conf"
+        done
+
+        echo "=== Proxmox内の設定ファイルにブリッジを正式登録します ==="
+
+        # vmbr1 から vmbr4 までの定義を /etc/network/interfaces の末尾に一括追記
+        for i in {0..3}; do
+          sh -c "echo '' >> /etc/network/interfaces"
+          sh -c "echo 'iface vmbr$((i + 1)) inet manual' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-ports none' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-stp off' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-fd 0' >> /etc/network/interfaces"
+        done
+        SCRIPT_EOF
+      loop: "{{ act_target.stdout_lines }}"
+      register: network_setup_results
+      changed_when: true
+
+    - name: ネットワーク設定(IP)とVM(VMID:100)の起動
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        ip addr add 192.168.100.1/24 dev vmbr1 || true
+        ip link set vmbr1 up || true
+        qm start 100
+        SCRIPT_EOF
+      loop: "{{ act_target.stdout_lines }}"
+      register: vm_start_results
+      changed_when: true
+
+    - name: act start後の起動待機
+      pause:
+        minutes: 3
+        prompt: "vSRXのact起動を待機中..."
+
+    - name: 対象のProxmoxコンテナのシリアルソケット経由でvSRXに初期設定を注入
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        container: "{{ item }}"
+        vmid: 100
+        timeout: 300
+        commands: |
+          cli -c 'configure; set system host-name vsrx1; set system root-authentication plain-text-password-value "password123"; set system services ssh root-login allow; set interfaces fxp0 unit 0 family inet address 192.168.100.2/24; commit and-quit'
+      loop: "{{ act_target.stdout_lines }}"
+      register: serial_results
+
+    # SBY 
+    - name: 実行対象のコンテナ名を取得
+      shell: >-
+        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "sby") | .Names[]'
+      register: sby_target
+      changed_when: false
+
+    - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
+      shell: |
+        docker exec -i {{ item }} bash -c '
+        mkdir -p /var/run/qemu-server
+        # 既にマウントされていなければ mount --bind を実行
+        if ! mountpoint -q /var/run/qemu-server; then
+          mount --bind /opt/qemu-shared /var/run/qemu-server
+        fi
+        '
+      loop: "{{ sby_target.stdout_lines }}"
+      changed_when: false
+
+    - name: 取得したsbyのproxmoxコンテナに対して設定スクリプトを実行
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        set -e
+        rm -rf /tmp/vsrx-config
+        mkdir -p /tmp/vsrx-config
+
+        qm stop 101 || true
+        qm destroy 101 --purge true || true
+
+        # 1. OVF インポートと仮想マシン構成
+        qm importovf 101 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
+        qm set 101 --name vsrx1 --memory 4096 --cores 2 --cpu cputype=host --scsihw virtio-scsi-pci
+        qm set 101 --serial0 socket --vga serial0
+        qm set 101 --scsi0 local:101/vm-101-disk-0.qcow2
+
+        # 2. ブート順序は scsi0 のみ（記事では ide2 をブート対象に入れていません）
+        qm set 101 --boot "order=scsi0"
+
+        SCRIPT_EOF
+      loop: "{{ sby_target.stdout_lines }}"
+      register: exec_results
+      changed_when: true
+
+    - name: sby start後の起動待機
+      pause:
+        minutes: 3
+        prompt: "vSRXのsby起動を待機中..."
+
+          
+    - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        VMID=101
+
+        echo "=== Proxmox VE ネットワーク連続設定を開始 ==="
+
+        # 【修正箇所】 0..3 ではなく 0..4 にして vmbr0 から vmbr4 までの5つを作成する
+        echo "[1/3] コンテナ内に Linux Bridge (vmbr1〜vmbr4) を一括作成中..."
+        for i in {0..3}; do
+          ip link add name vmbr$((i + 1)) type bridge || true
+          ip link set vmbr$((i + 1)) up || true
+        done
+
+        # 2. Containerlabのethポート（eth0〜eth3）を vmbr1〜vmbr4 に収容
+        for i in {0..3}; do
+          ip link set eth$((i + 1 )) master vmbr$((i + 1)) || true
+          ip link set eth$((i + 1 )) up || true
+        done
+
+        # 3. ProxmoxのVM構成ファイルから古いネットワーク設定を掃除し、新規に一括書き込み
+        echo "[3/3] VM $VMID の構成ファイルに net0〜net3 を直接書き込み中..."
+
+        # 競合を防ぐため、既存の net0 〜 net3 の設定行を削除
+        for i in {0..3}; do
+          sed -i "/^net$i:/d" /etc/pve/qemu-server/$VMID.conf
+        done
+
+        # 新しい設定(net0:vmbr1 〜 net3:vmbr4)を一括追加
+        for i in {0..3}; do
+          sh -c "echo 'net$i: virtio,bridge=vmbr$((i+1))' >> /etc/pve/qemu-server/$VMID.conf"
+        done
+
+        echo "=== Proxmox内の設定ファイルにブリッジを正式登録します ==="
+
+        # vmbr1 から vmbr4 までの定義を /etc/network/interfaces の末尾に一括追記
+        for i in {0..3}; do
+          sh -c "echo '' >> /etc/network/interfaces"
+          sh -c "echo 'iface vmbr$((i + 1)) inet manual' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-ports none' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-stp off' >> /etc/network/interfaces"
+          sh -c "echo '        bridge-fd 0' >> /etc/network/interfaces"
+        done
+        SCRIPT_EOF
+      loop: "{{ sby_target.stdout_lines }}"
+      register: network_setup_results
+      changed_when: true
+
+    - name: ネットワーク設定(IP)とVM(VMID:100)の起動
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        ip addr add 192.168.100.1/24 dev vmbr1 || true
+        ip link set vmbr1 up || true
+        qm start 101
+        SCRIPT_EOF
+      loop: "{{ sby_target.stdout_lines }}"
+      register: vm_start_results
+      changed_when: true
+
+    - name: 対象のProxmoxコンテナのシリアルソケット経由でvSRXに初期設定を注入
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/101.serial0"
+        container: "{{ item }}"
+        vmid: 101
+        timeout: 300
+        commands: |
+          cli -c 'configure; set system host-name vsrx1; set system root-authentication plain-text-password-value "password123"; set system services ssh root-login allow; set interfaces fxp0 unit 0 family inet address 192.168.100.2/24; commit and-quit'
+      loop: "{{ sby_target.stdout_lines }}"
+      register: serial_results
+
+    - name: 実行ログの確認
+      debug:
+        msg:
+          - "Target Container: {{ item.item }}"
+          - "Socket: {{ item.socket_used }}"
+          - "Output: {{ item.stdout_lines }}"
+      loop: "{{ serial_results.results }}"
+
+    # --- 1-1. シャーシクラスタ化の有効化とリブート ---
+    - name: シャーシクラスタを有効化してvSRXを再起動
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        expect_reboot: true
+        # cliモードに入ってからオペレーショナルコマンドを発行
+        commands:
+          - "cli"
+          - "set chassis cluster cluster-id {{ cluster_id }} node {{ node_id | default(0) }} reboot"
+      vars:
+        cluster_id: 1
+        node_id: 0
+      loop: "{{ act_target.stdout_lines }}"
+
+    # --- 1-2. シャーシクラスタ化の有効化とリブート ---
+    - name: シャーシクラスタを有効化してvSRXを再起動
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/101.serial0"
+        expect_reboot: true
+        # cliモードに入ってからオペレーショナルコマンドを発行
+        commands:
+          - "cli"
+          - "set chassis cluster cluster-id {{ cluster_id }} node {{ node_id | default(0) }} reboot"
+      vars:
+        cluster_id: 1
+        node_id: 1
+      loop: "{{ sby_target.stdout_lines }}"
+
+    # --- 2. リブート完了待機 ---
+    - name: クラスタリブート後の起動待機
+      pause:
+        minutes: 3
+        prompt: "vSRXのクラスタ有効化リブート完了を待機中..."
+
+
+    # --- 3. クラスタ設定の注入 ---
+    - name: クラスタ用のインターフェースおよび冗長化設定を注入
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        timeout: 300
+        password: "password123"
+        commands:
+          - "cli"
+          - "set cli screen-length 0"
+          - "set cli screen-width 511"
+          - "configure"
+
+          # --- ノード個別設定 ---
+          - "set groups node0 system host-name vsrx-node0"
+          - "set groups node0 interfaces fxp0 unit 0 family inet address 192.168.100.2/24"
+          - "set groups node1 system host-name vsrx-node1"
+          - "set groups node1 interfaces fxp0 unit 0 family inet address 192.168.100.3/24"
+          - 'set apply-groups "${node}"'
+
+          # --- クラスタ基盤設定 ---
+          - "set chassis cluster reth-count 1"
+          - "set chassis cluster redundancy-group 0 node 0 priority 100"
+          - "set chassis cluster redundancy-group 0 node 1 priority 1"
+          - "set chassis cluster redundancy-group 1 node 0 priority 100"
+          - "set chassis cluster redundancy-group 1 node 1 priority 1"
+
+          # --- インターフェース設定 ---
+          # fab0 は Node0 なので ge-0/0/0
+          - "set interfaces fab0 fabric-options member-interfaces ge-0/0/0"
+          # 【修正】fab1 は Node1 なのでオフセットを加算して ge-7/0/0 を指定
+          - "set interfaces fab1 fabric-options member-interfaces ge-7/0/0"
+
+          - "set interfaces ge-0/0/1 gigether-options redundant-parent reth0"
+          - "set interfaces reth0 redundant-ether-options redundancy-group 1"
+          - "set interfaces reth0 unit 0 family inet address 10.0.0.1/24"
+
+          - "commit and-quit"
+          - "exit"
+      loop: "{{ act_target.stdout_lines }}"
+      register: cluster_config_results

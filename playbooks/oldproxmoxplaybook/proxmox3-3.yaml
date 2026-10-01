@@ -1,0 +1,66 @@
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    with_clab: "{{ with_clab }}"
+    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    remote_address: localhost
+    conductor_address: "{{ remote_address }}:15000"
+    clusterid: 1
+  tasks:
+    - name: 実行対象のコンテナ名を取得
+      shell: >-
+        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "act") | .Names[]'
+      register: act_target
+      changed_when: false
+
+    - name: 実行対象のコンテナ名を取得
+      shell: >-
+        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "sby") | .Names[]'
+      register: sby_target
+      changed_when: false
+
+    # --- 3. クラスタ設定の注入 ---
+    - name: クラスタ用のインターフェースおよび冗長化設定を注入
+      proxmox_serial_exec:
+        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        timeout: 300
+        password: "password123"
+        commands:
+          - "cli"
+          - "set cli screen-length 0"
+          - "set cli screen-width 511"
+          - "configure"
+          
+          # --- ノード個別設定 ---
+          - "set groups node0 system host-name vsrx-node0"
+          - "set groups node0 interfaces fxp0 unit 0 family inet address 192.168.100.2/24"
+          - "set groups node1 system host-name vsrx-node1"
+          - "set groups node1 interfaces fxp0 unit 0 family inet address 192.168.100.3/24"
+          - 'set apply-groups "${node}"'
+          
+          # --- クラスタ基盤設定 ---
+          - "set chassis cluster reth-count 1"
+          - "set chassis cluster redundancy-group 0 node 0 priority 100"
+          - "set chassis cluster redundancy-group 0 node 1 priority 1"
+          - "set chassis cluster redundancy-group 1 node 0 priority 100"
+          - "set chassis cluster redundancy-group 1 node 1 priority 1"
+          
+          # --- インターフェース設定 ---
+          # fab0 は Node0 なので ge-0/0/0
+          - "set interfaces fab0 fabric-options member-interfaces ge-0/0/0"
+          # 【修正】fab1 は Node1 なのでオフセットを加算して ge-7/0/0 を指定
+          - "set interfaces fab1 fabric-options member-interfaces ge-7/0/0"
+          
+          - "set interfaces ge-0/0/1 gigether-options redundant-parent reth0"
+          - "set interfaces reth0 redundant-ether-options redundancy-group 1"
+          - "set interfaces reth0 unit 0 family inet address 10.0.0.1/24"
+          
+          - "commit and-quit"
+          - "exit"
+      loop: "{{ act_target.stdout_lines }}"
+      register: cluster_config_results        
