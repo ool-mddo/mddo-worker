@@ -125,6 +125,7 @@
           - "set cli screen-width 511"
           - "configure"
           - "set system host-name vsrx"
+          - "set system services netconf ssh"
           - "set system services ssh root-login allow"
           - 'set system root-authentication plain-text-password-value "password123"'
           - "commit and-quit"

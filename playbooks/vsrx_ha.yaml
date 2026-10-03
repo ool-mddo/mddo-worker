@@ -61,15 +61,15 @@
 
         echo "=== Proxmox VE ネットワーク連続設定を開始 ==="
 
-        # 【修正箇所】 0..3 ではなく 0..4 にして vmbr0 から vmbr4 までの5つを作成する
+        # 【修正箇所】 0..3 ではなく 0..4 にして vmbr1 から vmbr5 までの5つを作成する
         echo "[1/3] コンテナ内に Linux Bridge (vmbr1〜vmbr4) を一括作成中..."
-        for i in {0..3}; do
+        for i in {0..4}; do
           ip link add name vmbr$((i + 1)) type bridge || true
           ip link set vmbr$((i + 1)) up || true
         done
 
-        # 2. Containerlabのethポート（eth0〜eth3）を vmbr1〜vmbr4 に収容
-        for i in {0..3}; do
+        # 2. Containerlabのethポート（eth1〜eth5）を vmbr1〜vmbr5 に収容
+        for i in {0..4}; do
           ip link set eth$((i + 1 )) master vmbr$((i + 1)) || true
           ip link set eth$((i + 1 )) up || true
         done
@@ -77,20 +77,20 @@
         # 3. ProxmoxのVM構成ファイルから古いネットワーク設定を掃除し、新規に一括書き込み
         echo "[3/3] VM $VMID の構成ファイルに net0〜net3 を直接書き込み中..."
 
-        # 競合を防ぐため、既存の net0 〜 net3 の設定行を削除
-        for i in {0..3}; do
+        # 競合を防ぐため、既存の net0 〜 net4 の設定行を削除
+        for i in {0..4}; do
           sed -i "/^net$i:/d" /etc/pve/qemu-server/$VMID.conf
         done
 
-        # 新しい設定(net0:vmbr1 〜 net3:vmbr4)を一括追加
-        for i in {0..3}; do
+        # 新しい設定(net0:vmbr1 〜 net4:vmbr5)を一括追加
+        for i in {0..4}; do
           sh -c "echo 'net$i: virtio,bridge=vmbr$((i+1))' >> /etc/pve/qemu-server/$VMID.conf"
         done
 
         echo "=== Proxmox内の設定ファイルにブリッジを正式登録します ==="
 
         # vmbr1 から vmbr4 までの定義を /etc/network/interfaces の末尾に一括追記
-        for i in {0..3}; do
+        for i in {0..4}; do
           sh -c "echo '' >> /etc/network/interfaces"
           sh -c "echo 'iface vmbr$((i + 1)) inet manual' >> /etc/network/interfaces"
           sh -c "echo '        bridge-ports none' >> /etc/network/interfaces"
@@ -113,19 +113,22 @@
       register: vm_start_results
       changed_when: true
 
-    - name: act start後の起動待機
-      pause:
-        minutes: 3
-        prompt: "vSRXのact起動を待機中..."
-
     - name: 対象のProxmoxコンテナのシリアルソケット経由でvSRXに初期設定を注入
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
         container: "{{ item }}"
         vmid: 100
-        timeout: 300
-        commands: |
-          cli -c 'configure; set system host-name vsrx1; set system root-authentication plain-text-password-value "password123"; set system services ssh root-login allow; set interfaces fxp0 unit 0 family inet address 192.168.100.2/24; commit and-quit'
+        timeout: 600
+        commands:
+          - "cli"
+          - "set cli screen-length 0"
+          - "set cli screen-width 511"
+          - "configure"
+          - "set system host-name vsrx"
+          - "set system services netconf ssh"
+          - "set system services ssh root-login allow"
+          - 'set system root-authentication plain-text-password-value "password123"'
+          - "commit and-quit"
       loop: "{{ act_target.stdout_lines }}"
       register: serial_results
 
@@ -172,11 +175,6 @@
       loop: "{{ sby_target.stdout_lines }}"
       register: exec_results
       changed_when: true
-
-    - name: sby start後の起動待機
-      pause:
-        minutes: 3
-        prompt: "vSRXのsby起動を待機中..."
 
           
     - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
@@ -243,11 +241,20 @@
         socket_path: "/tmp/proxmox-shared/qemu/101.serial0"
         container: "{{ item }}"
         vmid: 101
-        timeout: 300
-        commands: |
-          cli -c 'configure; set system host-name vsrx1; set system root-authentication plain-text-password-value "password123"; set system services ssh root-login allow; set interfaces fxp0 unit 0 family inet address 192.168.100.2/24; commit and-quit'
-      loop: "{{ sby_target.stdout_lines }}"
+        timeout: 600
+        commands:
+          - "cli"
+          - "set cli screen-length 0"
+          - "set cli screen-width 511"
+          - "configure"
+          - "set system host-name vsrx"
+          - "set system services ssh root-login allow"
+          - "set system services netconf ssh"
+          - 'set system root-authentication plain-text-password-value "password123"'
+          - "commit and-quit"
+      loop: "{{ act_target.stdout_lines }}"
       register: serial_results
+
 
     - name: 実行ログの確認
       debug:
@@ -262,6 +269,7 @@
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
         expect_reboot: true
+        timeout: 600
         # cliモードに入ってからオペレーショナルコマンドを発行
         commands:
           - "cli"
@@ -276,6 +284,7 @@
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/101.serial0"
         expect_reboot: true
+        timeout: 600
         # cliモードに入ってからオペレーショナルコマンドを発行
         commands:
           - "cli"
@@ -285,18 +294,12 @@
         node_id: 1
       loop: "{{ sby_target.stdout_lines }}"
 
-    # --- 2. リブート完了待機 ---
-    - name: クラスタリブート後の起動待機
-      pause:
-        minutes: 3
-        prompt: "vSRXのクラスタ有効化リブート完了を待機中..."
-
 
     # --- 3. クラスタ設定の注入 ---
     - name: クラスタ用のインターフェースおよび冗長化設定を注入
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
-        timeout: 300
+        timeout: 600
         password: "password123"
         commands:
           - "cli"
@@ -329,6 +332,37 @@
           - "set interfaces reth0 unit 0 family inet address 10.0.0.1/24"
 
           - "commit and-quit"
-          - "exit"
       loop: "{{ act_target.stdout_lines }}"
       register: cluster_config_results
+        
+    - name: portforward
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        sysctl -w net.ipv4.ip_forward=1
+        nft add table ip nat
+        nft add chain ip nat PREROUTING  '{ type nat hook prerouting  priority dstnat; }'
+        nft add chain ip nat POSTROUTING '{ type nat hook postrouting priority srcnat; }'
+        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.2:22
+        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.2:22
+        nft add rule ip nat POSTROUTING ip daddr 192.168.100.2 tcp dport 22 masquerade
+        ping -c 2 192.168.100.2 || true # ARPテーブルの事前解決        
+        SCRIPT_EOF
+      loop: "{{ act_target.stdout_lines }}"
+      register: exec_results
+      changed_when: true
+
+    - name: portforward
+      shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        sysctl -w net.ipv4.ip_forward=1
+        nft add table ip nat
+        nft add chain ip nat PREROUTING  '{ type nat hook prerouting  priority dstnat; }'
+        nft add chain ip nat POSTROUTING '{ type nat hook postrouting priority srcnat; }'
+        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.3:22
+        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.3:22
+        nft add rule ip nat POSTROUTING ip daddr 192.168.100.3 tcp dport 22 masquerade
+        ping -c 2 192.168.100.3 || true # ARPテーブルの事前解決        
+        SCRIPT_EOF
+      loop: "{{ sby_target.stdout_lines }}"
+      register: exec_results
+      changed_when: true
