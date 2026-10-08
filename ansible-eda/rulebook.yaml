@@ -65,3 +65,19 @@
             operation: "{{ event.payload.operation }}"
             bridge_name: "{{ event.payload.bridge_name }}"
             port_name: "{{ event.payload.port_name }}"
+    - name: vsrx ha deployment
+      condition: event.payload.message == "vsrx_ha"
+      action:
+        run_playbook:
+          name: "/playbooks/vsrx_ha.yaml"
+          extra_vars:
+            cluster_id: "{{ event.payload.cluster_id | default(1) }}"
+            password: "{{ event.payload.password | default('password123') }}"
+            remote_address: "{{ event.payload.remote_address }}"
+            num_if: "{{ event.payload.num_if | default(5) }}"
+            node_0_id: "{{ event.payload.node_0_id | default(0) }}"
+            node_1_id: "{{ event.payload.node_1_id | default(1) }}"
+            node_0_ip: "{{ event.payload.node_0_ip | default('192.168.100.2/24') }}"
+            node_1_ip: "{{ event.payload.node_1_ip | default('192.168.100.3/24') }}"
+            node_0_if: "{{ event.payload.node_0_if | default('ge-0/0/0') }}"
+            node_1_if: "{{ event.payload.node_1_if | default('ge-7/0/0') }}"
