@@ -9,7 +9,7 @@
     - name: 実行対象のコンテナ名を取得
       shell: >-
         docker exec mddo-clab-docker containerlab inspect --all --format json --details |
-        jq -r '.emulated[] | select(.Labels.cluster_id == "{{ cluster_id }}" and .Labels.redundant == "act") | .Names[]'
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ cluster_id | string }}" and .Labels.redundant == "act") | .Names[]'
       register: act_target
       changed_when: false
 
@@ -37,7 +37,7 @@
 
         # 1. OVF インポートと仮想マシン構成
         qm importovf {{ cluster_id }}00 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
-        qm set {{ cluster_id }}00 --name vsrx1 --memory 4096 --cores 2 --cpu cputype=host --scsihw virtio-scsi-pci
+        qm set {{ cluster_id }}00 --name vsrx1 --memory 8192 --cores 5 --cpu cputype=host --scsihw virtio-scsi-pci
         qm set {{ cluster_id }}00 --serial0 socket --vga serial0
         qm set {{ cluster_id }}00 --scsi0 local:{{ cluster_id }}00/vm-{{ cluster_id }}00-disk-0.qcow2
 
@@ -98,7 +98,7 @@
       register: network_setup_results
       changed_when: true
 
-    - name: ネットワーク設定(IP)とVM(VMID:100)の起動
+    - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}00)の起動
       shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
@@ -113,7 +113,7 @@
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         container: "{{ item }}"
-        vmid: {{ cluster_id }}00
+        vmid: "{{ cluster_id }}00"
         password: "{{ password }}"
         timeout: 600
         commands:
@@ -133,7 +133,7 @@
     - name: 実行対象のコンテナ名を取得
       shell: >-
         docker exec mddo-clab-docker containerlab inspect --all --format json --details |
-        jq -r '.emulated[] | select(.Labels.cluster_id == "{{ cluster_id }}" and .Labels.redundant == "sby") | .Names[]'
+        jq -r '.emulated[] | select(.Labels.clusterid == "{{ cluster_id }}" and .Labels.redundant == "sby") | .Names[]'
       register: sby_target
       changed_when: false
 
@@ -161,7 +161,7 @@
 
         # 1. OVF インポートと仮想マシン構成
         qm importovf {{ cluster_id }}01 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
-        qm set {{ cluster_id }}01 --name vsrx1 --memory 4096 --cores 2 --cpu cputype=host --scsihw virtio-scsi-pci
+        qm set {{ cluster_id }}01 --name vsrx1 --memory 8192 --cores 5 --cpu cputype=host --scsihw virtio-scsi-pci
         qm set {{ cluster_id }}01 --serial0 socket --vga serial0
         qm set {{ cluster_id }}01 --scsi0 local:{{ cluster_id }}01/vm-{{ cluster_id }}01-disk-0.qcow2
 
@@ -222,7 +222,7 @@
       register: network_setup_results
       changed_when: true
 
-    - name: ネットワーク設定(IP)とVM(VMID:100)の起動
+    - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}01)の起動
       shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
@@ -237,7 +237,7 @@
       proxmox_serial_exec:
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}01.serial0"
         container: "{{ item }}"
-        vmid: {{ cluster_id }}01
+        vmid: "{{ cluster_id }}01"
         timeout: 600
         password: "{{ password }}"
         commands:
@@ -250,7 +250,7 @@
           - "set system services netconf ssh"
           - 'set system root-authentication plain-text-password-value "{{ password }}"'
           - "commit and-quit"
-      loop: "{{ act_target.stdout_lines }}"
+      loop: "{{ sby_target.stdout_lines }}"
       register: serial_results
 
     # 実行ログの確認
@@ -265,7 +265,7 @@
     # --- 1-1. シャーシクラスタ化の有効化とリブート ---
     - name: シャーシクラスタを有効化してvSRXを再起動
       proxmox_serial_exec:
-        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         expect_reboot: true
         timeout: 600
         # cliモードに入ってからオペレーショナルコマンドを発行
@@ -280,7 +280,7 @@
     # --- 1-2. シャーシクラスタ化の有効化とリブート ---
     - name: シャーシクラスタを有効化してvSRXを再起動
       proxmox_serial_exec:
-        socket_path: "/tmp/proxmox-shared/qemu/101.serial0"
+        socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}01.serial0"
         expect_reboot: true
         timeout: 600
         # cliモードに入ってからオペレーショナルコマンドを発行
@@ -296,7 +296,7 @@
     # --- 3. クラスタ設定の注入 ---
     - name: クラスタ用のインターフェースおよび冗長化設定を注入
       proxmox_serial_exec:
-        socket_path: "/tmp/proxmox-shared/qemu/100.serial0"
+        socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         timeout: 600
         password: "{{ password }}"
         commands:

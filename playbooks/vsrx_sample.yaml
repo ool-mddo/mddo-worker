@@ -5,8 +5,11 @@
   gather_facts: no
   #connection: ansible.netcommon.network_cli
   connection: ansible.netcommon.netconf
+  serial: 1
 
   vars:
+    ansible_command_timeout: 120
+    ansible_connect_timeout: 120
     ansible_port: 22
     ansible_host_key_checking: false
     ansible_network_os: junipernetworks.junos.junos

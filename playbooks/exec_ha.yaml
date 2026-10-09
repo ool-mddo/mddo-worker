@@ -1,0 +1,77 @@
+---
+- name: Deploy vSRX HA based on Containerlab topology
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    # 実際のトポロジーファイルのパスに合わせてください
+    topology_file: "/clab/clab-topo.yaml"
+
+
+  tasks:
+    - name: Read Containerlab topology file
+      ansible.builtin.set_fact:
+        topo_data: "{{ lookup('file', topology_file) | from_yaml }}"
+
+
+
+    - name: Extract cluster_id and calculate num_if for active junos nodes
+      ansible.builtin.set_fact:
+        extracted_data: >-
+          {%- set results = [] -%}
+          {%- for node_name, node_attrs in topo_data.topology.nodes.items() -%}
+            {%- if node_attrs.labels is defined and 
+                   node_attrs.labels.get('ansible-group') == 'junos' and 
+                   node_attrs.labels.get('redundant') == 'act' -%}
+              
+              {%- set c_id = node_attrs.labels.get('clusterid') -%}
+              
+              {#- リンク情報から ethX の番号を抽出 -#}
+              {%- set eth_nums = [] -%}
+              {%- for link in topo_data.topology.links -%}
+                {%- for ep in link.endpoints -%}
+                  {%- if ep.startswith(node_name ~ ':eth') -%}
+                    {%- set num = ep.split(':eth')[1] | int -%}
+                    {%- set _ = eth_nums.append(num) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              
+              {#- ethX の最大値を取得 (インターフェースが存在しない場合は0) -#}
+              {%- set max_eth = (eth_nums | max) if eth_nums | length > 0 else 0 -%}
+              
+              {%- set _ = results.append({
+                'node': node_name,
+                'cluster_id': c_id,
+                'num_if': max_eth
+              }) -%}
+              
+            {%- endif -%}
+          {%- endfor -%}
+          {{ results }}
+
+    - name: Show all extracted target data (for debugging)
+      ansible.builtin.debug:
+        var: extracted_data
+        
+    - name: Trigger EDA Rulebook endpoint for each extracted cluster
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:48090/"  # EDAを実行しているホストのIPに合わせて変更してください
+        method: POST
+        body_format: json
+        body:
+          # Rulebookの condition に合致させるためのメッセージ
+          message: "vsrx_ha"
+          # 抽出した値をペイロードとして送信
+          cluster_id: "{{ item.cluster_id }}"
+          num_if: "{{ item.num_if }}"
+          remote_address: "172.32.0.1"
+          
+          # その他必要な変数があればここで追加可能です
+          # remote_address: "..." 
+      loop: "{{ extracted_data }}"
+      
+    - name: Show triggering result
+      ansible.builtin.debug:
+        msg: "Triggered vsrx_ha rule for Node: {{ item.node }}, Cluster ID: {{ item.cluster_id }}, num_if: {{ item.num_if }}"
+      loop: "{{ extracted_data }}"        
