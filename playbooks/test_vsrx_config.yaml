@@ -1,0 +1,48 @@
+---
+### ansible-playbook -i clab-emulated/ansible-inventory.yml show_conf.yml
+- name: Collect Junos configuration from vSRX
+  hosts: clab-emulated-site-a-fw-1 # <-- junos グループを対象に指定
+  gather_facts: no
+  #connection: ansible.netcommon.network_cli
+  connection: ansible.netcommon.netconf
+
+  vars:
+    ansible_port: 22
+    ansible_host_key_checking: false
+    ansible_network_os: junipernetworks.junos.junos
+    ansible_user: root
+    ansible_password: password123
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+  tasks:
+    - name: Ansibleノード（localhost）にNETCONF用Pythonライブラリをインストール
+      ansible.builtin.pip:
+        name:
+          - ncclient
+          - xmltodict
+        state: present
+      # 対象機器(junos)へのタスク実行中であっても、このインストール処理はAnsibleノード自身(localhost)で行う
+      delegate_to: localhost
+      # 複数台への実行時でも、インストール処理は最初の1回だけ実行させる
+      run_once: true
+
+    - name: Load configuration from a local file and commit
+      junipernetworks.junos.junos_config:
+        backup: true
+        update: merge
+        # inventory_hostname (例: clab-emulated-site-a-fw-1) から
+        # 先頭の 'clab-emulated-' を削除し、末尾に '.conf' を付与してパスを組み立てる
+        src: "/clab/{{ inventory_hostname | regex_replace('^clab-emulated-', '') }}.conf"
+        src_format: text
+        comment: updating config using Ansible
+      register: response
+
+    - name: Run show configuration
+      junipernetworks.junos.junos_command:
+        commands:
+          - show configuration
+      register: result
+
+    - name: Print the response
+      ansible.builtin.debug:
+        var: response

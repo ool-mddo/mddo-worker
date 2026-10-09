@@ -1,0 +1,44 @@
+set version 20190319.203446_builder.r1013243
+set groups node0 system host-name vsrx-node0
+set groups node0 interfaces fxp0 unit 0 family inet address 192.168.100.2/24
+set groups node1 system host-name vsrx-node1
+set groups node1 interfaces fxp0 unit 0 family inet address 192.168.100.3/24
+set apply-groups "${node}"
+set system root-authentication encrypted-password "$6$pKfPUFJo$VPITS8X/9EKeYGDyFigJj7CebmTwK2javhCHfHPbpWPWVxCfrk0cbkkNdkJ1TqzXumrxAd22Hepk2L.YWPxbT/"
+set system services ssh root-login allow
+set system services netconf ssh
+set system services web-management http interface fxp0.0
+set system host-name vsrx
+set system syslog user * any emergency
+set system syslog file messages any any
+set system syslog file messages authorization info
+set system syslog file interactive-commands interactive-commands any
+set system license autoupdate url https://ae1.juniper.net/junos/key_retrieval
+set chassis cluster reth-count 1
+set chassis cluster redundancy-group 0 node 0 priority 100
+set chassis cluster redundancy-group 0 node 1 priority 1
+set chassis cluster redundancy-group 1 node 0 priority 100
+set chassis cluster redundancy-group 1 node 1 priority 1
+set security screen ids-option untrust-screen icmp ping-death
+set security screen ids-option untrust-screen ip source-route-option
+set security screen ids-option untrust-screen ip tear-drop
+set security screen ids-option untrust-screen tcp syn-flood alarm-threshold 1024
+set security screen ids-option untrust-screen tcp syn-flood attack-threshold 200
+set security screen ids-option untrust-screen tcp syn-flood source-threshold 1024
+set security screen ids-option untrust-screen tcp syn-flood destination-threshold 2048
+set security screen ids-option untrust-screen tcp syn-flood queue-size 2000
+set security screen ids-option untrust-screen tcp syn-flood timeout 20
+set security screen ids-option untrust-screen tcp land
+set security policies from-zone trust to-zone trust policy default-permit match source-address any
+set security policies from-zone trust to-zone trust policy default-permit match destination-address any
+set security policies from-zone trust to-zone trust policy default-permit match application any
+set security policies from-zone trust to-zone trust policy default-permit then permit
+set security policies from-zone trust to-zone untrust policy default-permit match source-address any
+set security policies from-zone trust to-zone untrust policy default-permit match destination-address any
+set security policies from-zone trust to-zone untrust policy default-permit match application any
+set security policies from-zone trust to-zone untrust policy default-permit then permit
+set security zones security-zone trust tcp-rst
+set security zones security-zone untrust screen untrust-screen
+set interfaces fab0 fabric-options member-interfaces ge-0/0/0
+set interfaces fab1 fabric-options member-interfaces ge-7/0/0
+set interfaces fxp0 unit 0
