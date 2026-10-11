@@ -1,7 +1,57 @@
 ---
-### ansible-playbook -i clab-emulated/ansible-inventory.yml show_conf.yml
+### ansible-playbook -i clab-emulated/ansible-inventory.yml vsrx_config.yaml
+
+# 1. topology-data.json からノード情報を取得して動的インベントリに登録
+- name: Containerlabのトポロジ情報から動的インベントリを生成
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: topology-data.json のパスを検出
+      ansible.builtin.set_fact:
+        topo_data_path: "{{ lookup('ansible.builtin.first_found', possible_paths) }}"
+      vars:
+        possible_paths:
+          - "/clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../../clab/clab-emulated/topology-data.json"
+          - "clab/clab-emulated/topology-data.json"
+          - "/home/mddo/playground/repos/mddo-worker/clab/clab-emulated/topology-data.json"
+
+    - name: topology-data.json をロード
+      ansible.builtin.slurp:
+        src: "{{ topo_data_path }}"
+      register: topo_raw
+
+    - name: 各ノードを動的インベントリに追加
+      vars:
+        topo_data: "{{ topo_raw.content | b64decode | from_json }}"
+      ansible.builtin.add_host:
+        name: "{{ item.value.labels['clab-node-longname'] | default(item.key) }}"
+        groups:
+          - "{{ item.value.labels['ansible-group'] | default(omit) }}"
+          - "cluster_{{ item.value.labels.clusterid | default('') }}"
+        redundant: "{{ item.value.labels.redundant | default('') }}"
+        clusterid: "{{ item.value.labels.clusterid | default('') }}"
+      loop: "{{ (topo_raw.content | b64decode | from_json).nodes | dict2items }}"
+      when:
+        - item.value.labels is defined
+        - item.value.labels.redundant is defined
+
+# 2. redundant の値 (act / sby) ごとに動的グループ化
+- name: redundant ごとに動的グループ化
+  hosts: junos
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: act / sby グループの作成
+      ansible.builtin.group_by:
+        key: "{{ redundant }}"
+      when: redundant is defined and redundant != ''
+
+# 3. vSRX (actノード) にコンフィグを投入
 - name: Collect Junos configuration from vSRX
-  hosts: junos # <-- junos グループを対象に指定
+  hosts: junos:&act
   gather_facts: no
   #connection: ansible.netcommon.network_cli
   connection: ansible.netcommon.netconf
@@ -39,6 +89,7 @@
         src_format: text
         comment: updating config using Ansible
       register: response
+      when: redundant == 'act'
 
     - name: Run show configuration
       junipernetworks.junos.junos_command:

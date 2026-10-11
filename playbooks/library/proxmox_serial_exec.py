@@ -19,7 +19,115 @@ except ImportError:
     HAS_PEXPECT = False
 
 
-def run_serial_commands(socket_path, commands, user, password, timeout, expect_reboot=False):
+DOCUMENTATION = r'''
+---
+module: proxmox_serial_exec
+short_description: Execute commands on Proxmox VM via serial socket with VNF-specific profiles
+options:
+  container:
+    description: Target Proxmox container name.
+    required: false
+    type: str
+  vmid:
+    description: Proxmox VMID.
+    required: false
+    default: 100
+    type: int
+  socket_path:
+    description: Full path override for the UNIX domain socket.
+    required: false
+    type: str
+  commands:
+    description: Command string or list of commands to execute.
+    required: true
+    type: raw
+  user:
+    description: Login user for console prompt.
+    required: false
+    default: "root"
+    type: str
+  password:
+    description: Login password for console prompt.
+    required: false
+    type: str
+  timeout:
+    description: Timeout for socket connection and prompt wait in seconds.
+    required: false
+    default: 180
+    type: int
+  expect_reboot:
+    description: Whether to expect a reboot after reboot command.
+    required: false
+    default: false
+    type: bool
+  vnf_type:
+    description: VNF type to select vendor/OS-specific prompt regex and timing ('vsrx', 'linux', etc.).
+    required: false
+    default: "vsrx"
+    type: str
+'''
+
+# VNFタイプ別のプロファイル定義
+# prompt_regex は [ログインプロンプト, パスワードプロンプト, シェルプロンプト] を返す
+VNF_PROFILES = {
+    "vsrx": {
+        "prompt_regex": lambda user: [
+            r"(?i)login:\s*",
+            r"(?i)password:\s*",
+            r"(?i)" + re.escape(user) + r"(?:@[^%#>\s]*)?\s*[%#>]"
+        ],
+        # vSRX特有のDPDKやインターフェース認識によるカーネルログが落ち着くまで15秒待機
+        "post_login_delay": 15,
+        "reboot_patterns": [r"(?i)going down", r"(?i)reboot"],
+    },
+    "linux": {
+        "prompt_regex": lambda user: [
+            r"(?i)login:\s*",
+            r"(?i)password:\s*",
+            r"(?i)(?:[#$>]|" + re.escape(user) + r"(?:@[^%#$>\s]*)?\s*[%#$>])"
+        ],
+        "post_login_delay": 1,
+        "reboot_patterns": [r"(?i)reboot", r"(?i)shutdown", r"(?i)power down"],
+    },
+    "generic": {
+        "prompt_regex": lambda user: [
+            r"(?i)login:\s*",
+            r"(?i)password:\s*",
+            r"(?i)(?:[#$%>]|" + re.escape(user) + r"@.*[#$%>])\s*"
+        ],
+        "post_login_delay": 1,
+        "reboot_patterns": [r"(?i)reboot", r"(?i)shutdown"],
+    },
+}
+
+
+def get_vnf_config(vnf_type, user):
+    """VNFタイプに応じた設定を展開して返すヘルパー関数"""
+    key = (vnf_type or "vsrx").lower()
+    if key not in VNF_PROFILES:
+        supported = ", ".join(sorted(VNF_PROFILES.keys()))
+        raise ValueError(f"Unsupported vnf_type '{vnf_type}'. Supported types: {supported}")
+
+    profile = VNF_PROFILES[key]
+    prompt_builder = profile.get("prompt_regex")
+    if callable(prompt_builder):
+        prompts = prompt_builder(user)
+    else:
+        prompts = list(prompt_builder)
+
+    return {
+        "prompt_regex": prompts,
+        "post_login_delay": profile.get("post_login_delay", 0),
+        "reboot_patterns": list(profile.get("reboot_patterns", [r"(?i)reboot"])),
+    }
+
+
+def run_serial_commands(socket_path, commands, user, password, timeout, expect_reboot=False, vnf_type="vsrx"):
+    vnf_config = get_vnf_config(vnf_type, user)
+    prompt_regex = vnf_config["prompt_regex"]
+    post_login_delay = vnf_config["post_login_delay"]
+    reboot_patterns = vnf_config["reboot_patterns"]
+
     start_wait = time.time()
     while time.time() - start_wait < 30:
         if os.path.exists(socket_path):
@@ -55,14 +163,6 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
             proc.read_nonblocking(size=4096, timeout=0.1)
         except (pexpect.TIMEOUT, pexpect.EOF):
             break
-
-    # 【根本対応】 指定されたユーザー名(デフォルトroot)を起点とし、
-    # 状態変化によるホスト名付与やクラスタ固有のプレフィックスを全て吸収する正規表現
-    prompt_regex = [
-        r"(?i)login:\s*",
-        r"(?i)password:\s*",
-        r"(?i)" + re.escape(user) + r"(?:@[^%#>\s]*)?\s*[%#>]"
-    ]
 
     start_time = time.time()
     logged_in = False
@@ -107,8 +207,9 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
         raise Exception(f"Timed out after {timeout}s waiting for login.\nConsole buffer:\n{buffer_content}")
 
     # 3. ログイン後のノイズ回避
-    # vSRX特有のDPDKやインターフェース認識によるカーネルログが落ち着くまで15秒待機
-    time.sleep(15)
+    # VNF固有の待機時間（vSRX特有のDPDKやインターフェース認識によるカーネルログが落ち着くまで待機等）
+    if post_login_delay > 0:
+        time.sleep(post_login_delay)
 
     # 待機中にコンソールに吐き出されたノイズログを完全に読み捨ててクリアする
     while True:
@@ -133,7 +234,7 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
         
         if expect_reboot and "reboot" in cmd:
             try:
-                proc.expect([r"(?i)going down", r"(?i)reboot", pexpect.EOF], timeout=10)
+                proc.expect(reboot_patterns + [pexpect.EOF], timeout=10)
             except (pexpect.TIMEOUT, pexpect.EOF):
                 pass
             output_lines.append(f"Reboot command '{cmd}' sent.")
@@ -168,6 +269,7 @@ def main():
         password=dict(type='str', required=False, default=None, no_log=True),
         timeout=dict(type='int', required=False, default=180),
         expect_reboot=dict(type='bool', required=False, default=False),
+        vnf_type=dict(type='str', required=False, default="vsrx"),
     )
 
     module = AnsibleModule(argument_spec=module_args, supports_check_mode=False)
@@ -183,12 +285,13 @@ def main():
     password = module.params['password']
     timeout = module.params['timeout']
     expect_reboot = module.params['expect_reboot']
+    vnf_type = module.params['vnf_type']
 
     if not socket_path:
         socket_path = f"/var/run/qemu-server/{vmid}.serial0" 
 
     try:
-        output = run_serial_commands(socket_path, commands, user, password, timeout, expect_reboot)
+        output = run_serial_commands(socket_path, commands, user, password, timeout, expect_reboot, vnf_type)
         module.exit_json(changed=True, stdout=output, socket_used=socket_path)
     except Exception as e:
         module.fail_json(msg=str(e), socket_used=socket_path)

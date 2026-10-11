@@ -1,3 +1,4 @@
+---
 - hosts: localhost
   connection: local
   gather_facts: false
@@ -6,12 +7,37 @@
     ansible_python_interpreter: /usr/bin/python3
     conductor_address: "{{ remote_address }}:15000"
   tasks:
-    - name: 実行対象のコンテナ名を取得
-      shell: >-
-        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
-        jq -r '.emulated[] | select(.Labels.clusterid == "{{ cluster_id | string }}" and .Labels.redundant == "act") | .Names[]'
-      register: act_target
-      changed_when: false
+    - name: topology-data.json のパスを検出
+      ansible.builtin.set_fact:
+        topo_data_path: "{{ lookup('ansible.builtin.first_found', possible_paths) }}"
+      vars:
+        possible_paths:
+          - "/clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../../clab/clab-emulated/topology-data.json"
+          - "clab/clab-emulated/topology-data.json"
+          - "/home/mddo/playground/repos/mddo-worker/clab/clab-emulated/topology-data.json"
+
+    - name: topology-data.json をロード
+      ansible.builtin.slurp:
+        src: "{{ topo_data_path }}"
+      register: topo_raw
+
+    - name: 実行対象のコンテナ名を取得 (act)
+      vars:
+        topo_nodes: "{{ (topo_raw.content | b64decode | from_json).nodes.values() | list }}"
+      ansible.builtin.set_fact:
+        act_target:
+          stdout_lines: >-
+            {{
+              topo_nodes
+              | selectattr('labels.clusterid', 'defined')
+              | selectattr('labels.clusterid', 'equalto', cluster_id | string)
+              | selectattr('labels.redundant', 'defined')
+              | selectattr('labels.redundant', 'equalto', 'act')
+              | map(attribute='labels.clab-node-longname')
+              | list
+            }}
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
       shell: |
@@ -111,6 +137,7 @@
 
     - name: 対象のProxmoxコンテナのシリアルソケット経由でvSRXに初期設定を注入
       proxmox_serial_exec:
+        vnf_type: vsrx
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         container: "{{ item }}"
         vmid: "{{ cluster_id }}00"
@@ -130,12 +157,21 @@
       register: serial_results
 
     # SBY 
-    - name: 実行対象のコンテナ名を取得
-      shell: >-
-        docker exec mddo-clab-docker containerlab inspect --all --format json --details |
-        jq -r '.emulated[] | select(.Labels.clusterid == "{{ cluster_id }}" and .Labels.redundant == "sby") | .Names[]'
-      register: sby_target
-      changed_when: false
+    - name: 実行対象のコンテナ名を取得 (sby)
+      vars:
+        topo_nodes: "{{ (topo_raw.content | b64decode | from_json).nodes.values() | list }}"
+      ansible.builtin.set_fact:
+        sby_target:
+          stdout_lines: >-
+            {{
+              topo_nodes
+              | selectattr('labels.clusterid', 'defined')
+              | selectattr('labels.clusterid', 'equalto', cluster_id | string)
+              | selectattr('labels.redundant', 'defined')
+              | selectattr('labels.redundant', 'equalto', 'sby')
+              | map(attribute='labels.clab-node-longname')
+              | list
+            }}
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
       shell: |
@@ -235,6 +271,7 @@
 
     - name: 対象のProxmoxコンテナのシリアルソケット経由でvSRXに初期設定を注入
       proxmox_serial_exec:
+        vnf_type: vsrx
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}01.serial0"
         container: "{{ item }}"
         vmid: "{{ cluster_id }}01"
@@ -265,6 +302,7 @@
     # --- 1-1. シャーシクラスタ化の有効化とリブート ---
     - name: シャーシクラスタを有効化してvSRXを再起動
       proxmox_serial_exec:
+        vnf_type: vsrx
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         expect_reboot: true
         timeout: 600
@@ -280,6 +318,7 @@
     # --- 1-2. シャーシクラスタ化の有効化とリブート ---
     - name: シャーシクラスタを有効化してvSRXを再起動
       proxmox_serial_exec:
+        vnf_type: vsrx
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}01.serial0"
         expect_reboot: true
         timeout: 600
@@ -296,6 +335,7 @@
     # --- 3. クラスタ設定の注入 ---
     - name: クラスタ用のインターフェースおよび冗長化設定を注入
       proxmox_serial_exec:
+        vnf_type: vsrx
         socket_path: "/tmp/proxmox-shared/qemu/{{ cluster_id }}00.serial0"
         timeout: 600
         password: "{{ password }}"
