@@ -6,6 +6,7 @@
     ansible_python_interpreter: /usr/bin/python3
     with_clab: "{{ with_clab }}"
     iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    topology_file: "/clab/clab-topo.yaml"
     remote_address: localhost
     conductor_address: "{{ remote_address }}:15000"
 
@@ -48,28 +49,10 @@
         body_format: json
       register: containerlab
 
-    - name: "Define additional links"
-      set_fact:
-        additional_links:
-          - endpoints: ['site-a-fw-1:eth2', 'site-a-fw-2:eth2']
-          - endpoints: ['site-b-fw-1:eth2', 'site-b-fw-2:eth2']
-          - endpoints: ['site-c-fw-1:eth2', 'site-c-fw-2:eth2']
-
-    - name: "Merge additional links into topology"
-      set_fact:
-        merged_topology: >-
-          {{ 
-            containerlab.json | combine({
-              'topology': {
-                'links': (containerlab.json.topology.links | default([])) + additional_links
-              }
-            }, recursive=True)
-          }}
-
     - name: "Creating clab-topo.yaml"
       copy:
         dest: "/clab/clab-topo.yaml"
-        content: "{{ merged_topology | to_nice_yaml }}"
+        content: "{{ containerlab.json | to_nice_yaml }}"
 
     - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
@@ -124,3 +107,110 @@
       shell: "docker exec mddo-clab-docker ip link set {{ item }} down"
       loop: "{{ shutdown_interface_list }}"
       ignore_errors: true
+
+    - name: Read Containerlab topology file
+      ansible.builtin.set_fact:
+        topo_data: "{{ lookup('file', topology_file) | from_yaml }}"
+
+    - name: Extract cluster_id and calculate num_if for active junos nodes
+      ansible.builtin.set_fact:
+        extracted_data: >-
+          {%- set results = [] -%}
+          {%- for node_name, node_attrs in topo_data.topology.nodes.items() -%}
+            {%- if node_attrs.labels is defined and 
+                   node_attrs.labels.get('ansible-group') == 'junos' and 
+                   node_attrs.labels.get('redundant') == 'act' -%}
+              
+              {%- set c_id = node_attrs.labels.get('clusterid') -%}
+              
+              {#- リンク情報から ethX の番号を抽出 -#}
+              {%- set eth_nums = [] -%}
+              {%- for link in topo_data.topology.links -%}
+                {%- for ep in link.endpoints -%}
+                  {%- if ep.startswith(node_name ~ ':eth') -%}
+                    {%- set num = ep.split(':eth')[1] | int -%}
+                    {%- set _ = eth_nums.append(num) -%}
+                  {%- endif -%}
+                {%- endfor -%}
+              {%- endfor -%}
+              
+              {#- ethX の最大値を取得 (インターフェースが存在しない場合は0) -#}
+              {%- set max_eth = (eth_nums | max) if eth_nums | length > 0 else 0 -%}
+              
+              {%- set _ = results.append({
+                'node': node_name,
+                'cluster_id': c_id,
+                'num_if': max_eth
+              }) -%}
+              
+            {%- endif -%}
+          {%- endfor -%}
+          {{ results }}
+
+    - name: Show all extracted target data (for debugging)
+      ansible.builtin.debug:
+        var: extracted_data
+
+    - name: Deploy vSRX HA and Apply Initial Config
+      when:
+        - with_clab | default('true') == 'true'
+        - extracted_data | length > 0
+      block:
+        - shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+
+        - name: Reset portforwarding rule in active containers before triggering
+          ansible.builtin.shell: >
+            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft delete rule ip nat PREROUTING tcp dport 22 dnat to 192.168.100.2:22 || true
+          loop: "{{ extracted_data }}"
+          changed_when: false
+
+        - name: Trigger EDA Rulebook endpoint for each extracted cluster
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:48090/"
+            method: POST
+            body_format: json
+            body:
+              message: "vsrx_ha"
+              snapshot_name: "{{ snapshot_name }}"
+              cluster_id: "{{ item.cluster_id }}"
+              num_if: "{{ item.num_if }}"
+              remote_address: "172.32.0.1"
+          loop: "{{ extracted_data }}"
+
+        - name: Show triggering result for vsrx_ha
+          ansible.builtin.debug:
+            msg: "Triggered vsrx_ha rule for Node: {{ item.node }}, Cluster ID: {{ item.cluster_id }}, num_if: {{ item.num_if }}"
+          loop: "{{ extracted_data }}"
+
+        - name: Wait for vsrx_ha parallel executions to complete on all active nodes
+          ansible.builtin.shell: >
+            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft list chain ip nat PREROUTING 2>/dev/null | grep -q "dnat to 192.168.100.2:22"
+          register: nft_check
+          until: nft_check.rc == 0
+          retries: 180  # 10秒 x 180回 = 最大30分待機
+          delay: 10
+          changed_when: false
+          loop: "{{ extracted_data }}"
+
+        - shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+
+        - name: Wait a brief moment for vSRX NETCONF/SSH service to stabilize
+          ansible.builtin.pause:
+            seconds: 10
+
+        - shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+
+        - name: Trigger EDA Rulebook endpoint for vSRX configuration (vsrx_config)
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:48090/"
+            method: POST
+            body_format: json
+            body:
+              message: "vsrx_config"
+              snapshot_name: "{{ snapshot_name }}"
+
+        - name: Show vsrx_config triggering result
+          ansible.builtin.debug:
+            msg: "All vsrx_ha parallel tasks completed. Triggered vsrx_config successfully for snapshot: {{ snapshot_name }}"
+
+        - shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'

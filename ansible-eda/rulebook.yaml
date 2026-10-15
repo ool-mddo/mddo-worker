@@ -1,7 +1,7 @@
 ---
 - name: deploycontainerlab
-  hosts: localhost
-  execution_strategy: sequential
+  hosts: all
+  execution_strategy: parallel
 
   sources:
     - ansible.eda.webhook:
@@ -72,6 +72,7 @@
         post_event:
           ruleset: "parallel_vsrx_ha"
           event:
+            snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
             message: "{{ event.payload.message }}"
             cluster_id: "{{ event.payload.cluster_id | default(1) }}"
             password: "{{ event.payload.password | default('password123') }}"
@@ -83,6 +84,13 @@
             node_1_ip: "{{ event.payload.node_1_ip | default('192.168.100.3/24') }}"
             node_0_if: "{{ event.payload.node_0_if | default('ge-0/0/0') }}"
             node_1_if: "{{ event.payload.node_1_if | default('ge-7/0/0') }}"
+    - name: vsrx config
+      condition: event.payload.message == "vsrx_config"
+      action:
+        run_playbook:
+          name: "/playbooks/vsrx_config.yaml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
 
 - name: parallel_vsrx_ha
   hosts: localhost
@@ -96,6 +104,7 @@
         run_playbook:
           name: "/playbooks/vsrx_ha.yaml"
           extra_vars:
+            snapshot_name: "{{ event.snapshot_name | default('emulated_asis') }}"
             cluster_id: "{{ event.cluster_id }}"
             password: "{{ event.password }}"
             remote_address: "{{ event.remote_address }}"

@@ -54,6 +54,12 @@
       ansible.builtin.debug:
         var: extracted_data
         
+    - name: Reset portforwarding rule in active containers before triggering
+      ansible.builtin.shell: >
+        docker exec clab-{{ topo_data.name }}-{{ item.node }} nft delete rule ip nat PREROUTING tcp dport 22 dnat to 192.168.100.2:22 || true
+      loop: "{{ extracted_data }}"
+      changed_when: false
+
     - name: Trigger EDA Rulebook endpoint for each extracted cluster
       ansible.builtin.uri:
         url: "http://127.0.0.1:48090/"  # EDAを実行しているホストのIPに合わせて変更してください
@@ -62,6 +68,7 @@
         body:
           # Rulebookの condition に合致させるためのメッセージ
           message: "vsrx_ha"
+          snapshot_name: "{{ topo_data.name | default('emulated_asis') }}"
           # 抽出した値をペイロードとして送信
           cluster_id: "{{ item.cluster_id }}"
           num_if: "{{ item.num_if }}"
@@ -74,4 +81,31 @@
     - name: Show triggering result
       ansible.builtin.debug:
         msg: "Triggered vsrx_ha rule for Node: {{ item.node }}, Cluster ID: {{ item.cluster_id }}, num_if: {{ item.num_if }}"
-      loop: "{{ extracted_data }}"        
+      loop: "{{ extracted_data }}"
+
+    - name: Wait for vsrx_ha parallel executions to complete on all active nodes
+      ansible.builtin.shell: >
+        docker exec clab-{{ topo_data.name }}-{{ item.node }} nft list chain ip nat PREROUTING 2>/dev/null | grep -q "dnat to 192.168.100.2:22"
+      register: nft_check
+      until: nft_check.rc == 0
+      retries: 180  # 10秒 x 180回 = 最大30分待機
+      delay: 10
+      changed_when: false
+      loop: "{{ extracted_data }}"
+
+    - name: Wait a brief moment for vSRX NETCONF/SSH service to stabilize
+      ansible.builtin.pause:
+        seconds: 10
+
+    - name: Trigger EDA Rulebook endpoint for vSRX configuration (vsrx_config)
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:48090/"
+        method: POST
+        body_format: json
+        body:
+          message: "vsrx_config"
+          snapshot_name: "{{ topo_data.name | default('emulated_asis') }}"
+
+    - name: Show vsrx_config triggering result
+      ansible.builtin.debug:
+        msg: "All vsrx_ha parallel tasks completed. Triggered vsrx_config successfully for snapshot: {{ topo_data.name | default('emulated_asis') }}"        

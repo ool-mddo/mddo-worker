@@ -6,12 +6,16 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  vars:
+    snapshot_name: emulated_asis
   tasks:
     - name: topology-data.json のパスを検出
       ansible.builtin.set_fact:
         topo_data_path: "{{ lookup('ansible.builtin.first_found', possible_paths) }}"
       vars:
         possible_paths:
+          - "/clab/clab-{{ snapshot_name }}/topology-data.json"
+          - "/clab/clab-emulated_asis/topology-data.json"
           - "/clab/clab-emulated/topology-data.json"
           - "{{ playbook_dir }}/../clab/clab-emulated/topology-data.json"
           - "{{ playbook_dir }}/../../clab/clab-emulated/topology-data.json"
@@ -55,9 +59,9 @@
   gather_facts: no
   #connection: ansible.netcommon.network_cli
   connection: ansible.netcommon.netconf
-  serial: 1  
  
   vars:
+    snapshot_name: emulated_asis
     ansible_command_timeout: 120
     ansible_connect_timeout: 120
     ansible_port: 22
@@ -85,7 +89,7 @@
         update: merge
         # inventory_hostname (例: clab-emulated-site-a-fw-1) から
         # 先頭の 'clab-emulated-' を削除し、末尾に '.conf' を付与してパスを組み立てる
-        src: "/clab/{{ inventory_hostname | regex_replace('^clab-emulated-', '') }}.conf"
+        src: "/clab/{{ inventory_hostname | regex_replace('^clab-' ~ snapshot_name ~ '-', '') }}.conf"
         src_format: text
         comment: updating config using Ansible
       register: response
