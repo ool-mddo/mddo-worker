@@ -4,21 +4,21 @@
   become: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
-    with_clab: "{{ with_clab }}"
-    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    with_clab: "true"
+    iperf_params_file: "/clab/iperf_params.json"  # in remote host path
     remote_address: localhost
     conductor_address: "{{ remote_address }}:15000"
     clusterid: 1
   tasks:
     - name: 実行対象のコンテナ名を取得
-      shell: >-
+      ansible.builtin.shell: >-
         docker exec mddo-clab-docker containerlab inspect --all --format json --details |
         jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "act") | .Names[]'
       register: act_target
       changed_when: false
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
-      shell: |
+      ansible.builtin.shell: |
         docker exec -i {{ item }} bash -c '
         mkdir -p /var/run/qemu-server
         # 既にマウントされていなければ mount --bind を実行
@@ -30,7 +30,7 @@
       changed_when: false
 
     - name: 取得したactのproxmoxコンテナに対して設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         set -e
         rm -rf /tmp/vsrx-config
@@ -55,7 +55,7 @@
 
           
     - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         VMID=100
 
@@ -103,7 +103,7 @@
       changed_when: true
 
     - name: ネットワーク設定(IP)とVM(VMID:100)の起動
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
@@ -134,14 +134,14 @@
 
     # SBY 
     - name: 実行対象のコンテナ名を取得
-      shell: >-
+      ansible.builtin.shell: >-
         docker exec mddo-clab-docker containerlab inspect --all --format json --details |
         jq -r '.emulated[] | select(.Labels.clusterid == "{{ clusterid }}" and .Labels.redundant == "sby") | .Names[]'
       register: sby_target
       changed_when: false
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
-      shell: |
+      ansible.builtin.shell: |
         docker exec -i {{ item }} bash -c '
         mkdir -p /var/run/qemu-server
         # 既にマウントされていなければ mount --bind を実行
@@ -153,7 +153,7 @@
       changed_when: false
 
     - name: 取得したsbyのproxmoxコンテナに対して設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         set -e
         rm -rf /tmp/vsrx-config
@@ -178,7 +178,7 @@
 
           
     - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         VMID=101
 
@@ -226,7 +226,7 @@
       changed_when: true
 
     - name: ネットワーク設定(IP)とVM(VMID:100)の起動
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
@@ -257,7 +257,7 @@
 
 
     - name: 実行ログの確認
-      debug:
+      ansible.builtin.debug:
         msg:
           - "Target Container: {{ item.item }}"
           - "Socket: {{ item.socket_used }}"
@@ -336,7 +336,7 @@
       register: cluster_config_results
         
     - name: portforward
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         sysctl -w net.ipv4.ip_forward=1
         iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination 192.168.100.2:22
@@ -348,7 +348,7 @@
       changed_when: true
 
     - name: portforward
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         sysctl -w net.ipv4.ip_forward=1
         iptables -t nat -A PREROUTING -p tcp --dport 22 -j DNAT --to-destination 192.168.100.3:22

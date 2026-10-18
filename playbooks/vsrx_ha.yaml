@@ -41,7 +41,7 @@
             }}
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
-      shell: |
+      ansible.builtin.shell: |
         docker exec -i {{ item }} bash -c '
         mkdir -p /var/run/qemu-server
         # 既にマウントされていなければ mount --bind を実行
@@ -53,7 +53,7 @@
       changed_when: false
 
     - name: 取得したactのproxmoxコンテナに対して設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         set -e
         rm -rf /tmp/vsrx-config
@@ -78,7 +78,7 @@
 
           
     - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         VMID={{ cluster_id }}00
 
@@ -126,7 +126,7 @@
       changed_when: true
 
     - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}00)の起動
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
@@ -175,7 +175,7 @@
             }}
 
     - name: qemu-serverディレクトリを共有ディレクトリに内部バインドマウント
-      shell: |
+      ansible.builtin.shell: |
         docker exec -i {{ item }} bash -c '
         mkdir -p /var/run/qemu-server
         # 既にマウントされていなければ mount --bind を実行
@@ -187,7 +187,7 @@
       changed_when: false
 
     - name: 取得したsbyのproxmoxコンテナに対して設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         set -e
         rm -rf /tmp/vsrx-config
@@ -212,7 +212,7 @@
 
           
     - name: コンテナ内でProxmoxのネットワーク設定スクリプトを実行
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         VMID={{ cluster_id }}01
         echo "=== Proxmox VE ネットワーク連続設定を開始 ==="
@@ -260,7 +260,7 @@
       changed_when: true
 
     - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}01)の起動
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         ip addr add 192.168.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
@@ -293,7 +293,7 @@
 
     # 実行ログの確認
     - name: 実行ログの確認
-      debug:
+      ansible.builtin.debug:
         msg:
           - "Target Container: {{ item.item }}"
           - "Socket: {{ item.socket_used }}"
@@ -312,7 +312,6 @@
           - "cli"
           - "set chassis cluster cluster-id {{ cluster_id }} node {{ node_id | default(0) }} reboot"
       vars:
-        cluster_id: "{{ cluster_id }}"
         node_id: "{{ node_0_id }}"
       loop: "{{ act_target.stdout_lines }}"
 
@@ -328,7 +327,6 @@
           - "cli"
           - "set chassis cluster cluster-id {{ cluster_id }} node {{ node_id | default(0) }} reboot"
       vars:
-        cluster_id: "{{ cluster_id }}"
         node_id: "{{ node_1_id }}"
       loop: "{{ sby_target.stdout_lines }}"
 
@@ -375,7 +373,7 @@
       register: cluster_config_results
         
     - name: portforward
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         sysctl -w net.ipv4.ip_forward=1
         nft add table ip nat
@@ -391,7 +389,7 @@
       changed_when: true
 
     - name: portforward
-      shell: |
+      ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
         sysctl -w net.ipv4.ip_forward=1
         nft add table ip nat

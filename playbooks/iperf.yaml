@@ -4,41 +4,44 @@
   become: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
-    with_clab: "{{ with_clab }}"
-    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    with_clab: "true"
+    iperf_params_file: "/clab/iperf_params.json"  # in remote host path
     remote_address: localhost
     conductor_address: "{{ remote_address }}:15000"
 
   tasks:
     #- name: restart iperf node
-    #  shell: "docker exec  mddo-clab-docker {{ exec_container }}"
+    #  ansible.builtin.shell: "docker exec mddo-clab-docker {{ exec_container }}"
     #  vars:
     #    exec_container: "docker ps | grep clab | grep endpoint | cut -d ' ' -f 1 | xargs -INODE docker restart NODE --time=1"
 
-    - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: update job_status (Preparing_Deploy_Clab=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+
     - name: "get convert table"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/config_params"
         method: "GET"
         body_format: json
       register: layer3_convert_table
 
-    - shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+    - name: update job_status (Preparing_IperfNode=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
     - name: "get layer3 topology (select endpoint node)"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/interfaces?node_type=endpoint"
         method: "GET"
         body_format: json
       register: layer3_nodes
 
     - name: generate iperf endpoint static-route info
-      set_fact:
+      ansible.builtin.set_fact:
         iperf_list: "{{ iperf_list | default([]) + [ item ] }}"
-      loop: "{{ layer3_nodes.json | json_query('nodes[*]') }}"
+      loop: "{{ layer3_nodes.json | community.general.json_query('nodes[*]') }}"
 
     - name: setting eth1 & default routing (debug)
-      debug:
+      ansible.builtin.debug:
         msg: "{{ exec_container }} {{ add_eth1_ip }}; {{ exec_container }} {{ del_default_route }}; {{ exec_container }} {{ add_default_route }}; {{ exec_container }}  {{ mtu_1500 }}"
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item['node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
@@ -46,10 +49,10 @@
         del_default_route: "ip route del default via 172.20.20.1"
         add_default_route: 'ip route add default via {{ item["attribute"]["static-route"][0]["next-hop"] }}'
         mtu_1500: 'ip link set dev eth1 mtu 1500'
-      loop: "{{ iperf_list }}"
+      loop: "{{ iperf_list | default([]) }}"
 
     - name: setting eth1 & default routing
-      shell:
+      ansible.builtin.shell:
         cmd: "{{ exec_container }} {{ add_eth1_ip }}; {{ exec_container }} {{ del_default_route }}; {{ exec_container }} {{ add_default_route }}; {{ exec_container }}  {{ mtu_1500 }}"
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item['node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
@@ -57,75 +60,69 @@
         del_default_route: "ip route del default via 172.20.20.1"
         add_default_route: 'ip route add default via {{ item["attribute"]["static-route"][0]["next-hop"] }}'
         mtu_1500: 'ip link set dev eth1 mtu 1500'
-      loop: "{{ iperf_list }}"
+      loop: "{{ iperf_list | default([]) }}"
       ignore_errors: true
-      when:
-        with_clab == "true"
+      when: with_clab | bool
 
     - name: iperf process stop
-      shell:
+      ansible.builtin.shell:
         cmd: '{{ exec_container }} /bin/bash -c "pkill iperf"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item['node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
-      loop: "{{ iperf_list }}"
+      loop: "{{ iperf_list | default([]) }}"
       ignore_errors: true
-      when:
-        with_clab == "true"
+      when: with_clab | bool
 
     - name: Save iperf commands data to a file
-      copy:
-        content: "{{ iperf_commands }}"
+      ansible.builtin.copy:
+        content: "{{ iperf_commands if iperf_commands is string else (iperf_commands | to_nice_json) }}"
         dest: "{{ iperf_params_file }}"
-    - shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
-    - shell: 'echo "job_status{jobname=\"Start_Iperf\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+    - name: update job_status (Preparing_IperfNode=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Preparing_IperfNode\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+
+    - name: update job_status (Start_Iperf=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Start_Iperf\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
     - name: iperf server command (debug)
-      debug:
+      ansible.builtin.debug:
         msg: '{{ exec_container }} /bin/bash -c "nohup iperf3 -s -p {{ item.1.server_port }} > out_{{ item.1.server_port }}.log &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.0['server_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
-      with_subelements:
-        - "{{ lookup('file', iperf_params_file) }}"
-        - clients
+      loop: "{{ (lookup('ansible.builtin.file', iperf_params_file) | from_yaml) | subelements('clients') }}"
 
     - name: iperf server command
-      shell:
+      ansible.builtin.shell:
         cmd: '{{ exec_container }} /bin/bash -c "nohup iperf3 -s -p {{ item.1.server_port }} > out_{{ item.1.server_port }}.log 2>&1 &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.0['server_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
-      with_subelements:
-        - "{{ lookup('file', iperf_params_file) }}"
-        - clients
-      when:
-        with_clab == "true"
+      loop: "{{ (lookup('ansible.builtin.file', iperf_params_file) | from_yaml) | subelements('clients') }}"
+      when: with_clab | bool
 
     - name: iperf client command (debug)
-      debug:
+      ansible.builtin.debug:
         msg: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.1['client_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
-      with_subelements:
-        - "{{ lookup('file', iperf_params_file) }}"
-        - clients
+      loop: "{{ (lookup('ansible.builtin.file', iperf_params_file) | from_yaml) | subelements('clients') }}"
 
     - name: iperf client command
-      shell:
+      ansible.builtin.shell:
         cmd: '{{ exec_container }} /bin/bash -c "nohup iperf3 -t 0 -c {{ item.1["server_address"] }} -b {{ item.1.rate | int }}K -p {{ item.1.server_port }} > out_{{ item.0.server_node }}.log 2>&1 &"'
       vars:
         exec_container: "docker exec  mddo-clab-docker containerlab inspect --all --format json | jq '.emulated[] | select( .name | contains (\"{{ item.1['client_node'] }}\")) | .name' | xargs -ICONTAINER docker exec CONTAINER "
-      with_subelements:
-        - "{{ lookup('file', iperf_params_file) }}"
-        - clients
-      when:
-        with_clab == "true"
+      loop: "{{ (lookup('ansible.builtin.file', iperf_params_file) | from_yaml) | subelements('clients') }}"
+      when: with_clab | bool
 
-    - shell: 'echo "job_status{jobname=\"Start_Iperf\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+    - name: update job_status (Start_Iperf=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Start_Iperf\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
-    - shell: 'echo "job_status{jobname=\"AllJob_Complete\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: update job_status (AllJob_Complete=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"AllJob_Complete\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
 
     - name: pause
-      pause:
+      ansible.builtin.pause:
         seconds: 10
 
-    - shell: 'echo "job_status{jobname=\"Iperf Executing\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: update job_status (Iperf Executing=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Iperf Executing\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'

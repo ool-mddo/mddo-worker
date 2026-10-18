@@ -4,113 +4,119 @@
   become: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
-    with_clab: "{{ with_clab }}"
-    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    with_clab: "true"
+    iperf_params_file: "/clab/iperf_params.json"  # in remote host path
     topology_file: "/clab/clab-topo.yaml"
     remote_address: localhost
     conductor_address: "{{ remote_address }}:15000"
 
   tasks:
     - name: delete config file
-      shell: rm -f /clab/*.conf
+      ansible.builtin.shell: rm -f /clab/*.conf
 
     - name: delete topo file
-      shell: rm  -f /clab/clab-topo.yaml
+      ansible.builtin.shell: rm -f /clab/clab-topo.yaml
 
     - name: delete iperf file
-      shell: rm -f /clab/iperf_params.json
+      ansible.builtin.shell: rm -f /clab/iperf_params.json
 
-    - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: update job_status (Preparing_Deploy_Clab=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+
     - name: "get convert table"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/config_params"
         method: "GET"
         body_format: json
       register: layer3_convert_table
 
     - name: download generated config
-      shell: "curl {{ url }}/{{ item.agent_name }}.conf | jq -r .text > {{ filepath }}"
+      ansible.builtin.shell: "curl {{ url }}/{{ item.agent_name }}.conf | jq -r .text > {{ filepath }}"
       vars:
         url: "http://{{ conductor_address }}/configs/{{ network_name }}/{{ snapshot_name }}"
         filepath: "/clab/{{ item.agent_name }}.conf"
       loop: "{{ layer3_convert_table.json }}"
 
     - name: "get convert table"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/config_params"
         method: "GET"
         body_format: json
       register: layer3_convert_table
 
     - name: "get clab topo yaml"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro&endpoint_image={{ endpoint_image }}&usecase={{ usecase_name }}"
         method: "GET"
         body_format: json
       register: containerlab
 
     - name: "Creating clab-topo.yaml"
-      copy:
+      ansible.builtin.copy:
         dest: "/clab/clab-topo.yaml"
         content: "{{ containerlab.json | to_nice_yaml }}"
 
-    - shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+    - name: update job_status (Preparing_Deploy_Clab=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Preparing_Deploy_Clab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
-    - shell: 'echo "job_status{jobname=\"Setting_ovs-br\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+    - name: update job_status (Setting_ovs-br=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Setting_ovs-br\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
     - name: "delete ovs-br {{ item.key }}"
-      shell: "docker exec  mddo-clab-docker ovs-vsctl del-br {{ item.key }}"
-      when: with_clab == "true" and "ovs" in item.value.kind
-      loop: "{{ lookup( 'ansible.builtin.dict', containerlab.json.topology.nodes) }}"
+      ansible.builtin.shell: "docker exec mddo-clab-docker ovs-vsctl del-br {{ item.key }}"
+      when: (with_clab | bool) and ("ovs" in item.value.kind)
+      loop: "{{ lookup('ansible.builtin.dict', containerlab.json.topology.nodes) }}"
       ignore_errors: true
 
     - name: "create ovs-br {{ item.key }}"
-      shell: "docker exec  mddo-clab-docker ovs-vsctl add-br {{ item.key }}"
-      when: with_clab == "true" and "ovs" in item.value.kind
-      loop: "{{ lookup( 'ansible.builtin.dict', containerlab.json.topology.nodes) }}"
+      ansible.builtin.shell: "docker exec mddo-clab-docker ovs-vsctl add-br {{ item.key }}"
+      when: (with_clab | bool) and ("ovs" in item.value.kind)
+      loop: "{{ lookup('ansible.builtin.dict', containerlab.json.topology.nodes) }}"
       ignore_errors: true
 
-    - shell: 'echo "job_status{jobname=\"Setting_ovs-br\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+    - name: update job_status (Setting_ovs-br=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Setting_ovs-br\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
-    - shell: 'echo "job_status{jobname=\"Deploying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+    - name: update job_status (Deploying_Containerlab=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Deploying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
     - name: deploy containerlab
-      shell:
-        cmd: "docker exec  mddo-clab-docker containerlab deploy --topo clab-topo.yaml --reconfigure"
-      when: with_clab == "true"
+      ansible.builtin.shell:
+        cmd: "docker exec mddo-clab-docker containerlab deploy --topo clab-topo.yaml --reconfigure"
+      when: with_clab | bool
 
     - name: Pause for 30 sec to build app cache
       ansible.builtin.pause:
         seconds: 30
 
     - name: enable bgp license
-      shell:
-        cmd: "docker exec  mddo-clab-docker containerlab exec --topo clab-topo.yaml --label clab-node-kind=juniper_crpd --cmd 'cli request system license add /tmp/license.key'"
-      when:
-        with_clab == "true"
+      ansible.builtin.shell:
+        cmd: "docker exec mddo-clab-docker containerlab exec --topo clab-topo.yaml --label clab-node-kind=juniper_crpd --cmd 'cli request system license add /tmp/license.key'"
+      when: with_clab | bool
 
-    - shell: 'echo "job_status{jobname=\"Deploying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" >> /prom/textfile.prom'
+    - name: update job_status (Deploying_Containerlab=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Deploying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" >> /prom/textfile.prom'
 
     - name: get interface list for empty node
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/interfaces?node_name=Seg_empty00"
         method: "GET"
         body_format: json
       register: shutdown_interface_response
-            
+
     - name: extract l1_principal values
-      set_fact:
-        shutdown_interface_list: "{{ shutdown_interface_response.json.nodes[0].interfaces | map(attribute='alias.l1_principal') | list }}"
+      ansible.builtin.set_fact:
+        shutdown_interface_list: "{{ (shutdown_interface_response.json.nodes[0].interfaces | map(attribute='alias.l1_principal') | list) if (shutdown_interface_response.json.nodes | default([]) | length > 0) else [] }}"
       ignore_errors: true
 
     - name: shutdown interfaces
-      shell: "docker exec mddo-clab-docker ip link set {{ item }} down"
-      loop: "{{ shutdown_interface_list }}"
+      ansible.builtin.shell: "docker exec mddo-clab-docker ip link set {{ item }} down"
+      loop: "{{ shutdown_interface_list | default([]) }}"
       ignore_errors: true
 
     - name: Read Containerlab topology file
       ansible.builtin.set_fact:
-        topo_data: "{{ lookup('file', topology_file) | from_yaml }}"
+        topo_data: "{{ lookup('ansible.builtin.file', topology_file) | from_yaml }}"
 
     - name: Extract cluster_id and calculate num_if for active junos nodes
       ansible.builtin.set_fact:
@@ -153,10 +159,11 @@
 
     - name: Deploy vSRX HA and Apply Initial Config
       when:
-        - with_clab | default('true') == 'true'
+        - with_clab | default('true') | bool
         - extracted_data | length > 0
       block:
-        - shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+        - name: update job_status (Deploying_vSRX_HA=1)
+          ansible.builtin.shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
         - name: Reset portforwarding rule in active containers before triggering
           ansible.builtin.shell: >
@@ -192,13 +199,15 @@
           changed_when: false
           loop: "{{ extracted_data }}"
 
-        - shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+        - name: update job_status (Deploying_vSRX_HA=0)
+          ansible.builtin.shell: 'echo "job_status{jobname=\"Deploying_vSRX_HA\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
         - name: Wait a brief moment for vSRX NETCONF/SSH service to stabilize
           ansible.builtin.pause:
             seconds: 10
 
-        - shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
+        - name: update job_status (Configuring_vSRX=1)
+          ansible.builtin.shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" >> /prom/textfile.prom'
 
         - name: Trigger EDA Rulebook endpoint for vSRX configuration (vsrx_config)
           ansible.builtin.uri:
@@ -213,4 +222,5 @@
           ansible.builtin.debug:
             msg: "All vsrx_ha parallel tasks completed. Triggered vsrx_config successfully for snapshot: {{ snapshot_name }}"
 
-        - shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+        - name: update job_status (Configuring_vSRX=0)
+          ansible.builtin.shell: 'echo "job_status{jobname=\"Configuring_vSRX\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'

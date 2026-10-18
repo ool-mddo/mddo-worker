@@ -4,6 +4,7 @@
   connection: local
   gather_facts: false
   vars:
+    ansible_python_interpreter: /usr/bin/python3
     # 実際のトポロジーファイルのパスに合わせてください
     topology_file: "/clab/clab-topo.yaml"
 
@@ -11,7 +12,7 @@
   tasks:
     - name: Read Containerlab topology file
       ansible.builtin.set_fact:
-        topo_data: "{{ lookup('file', topology_file) | from_yaml }}"
+        topo_data: "{{ lookup('ansible.builtin.file', topology_file) | from_yaml }}"
 
 
 
