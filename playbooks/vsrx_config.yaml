@@ -1,0 +1,106 @@
+---
+### ansible-playbook -i clab-emulated/ansible-inventory.yml vsrx_config.yaml
+
+# 1. topology-data.json からノード情報を取得して動的インベントリに登録
+- name: Containerlabのトポロジ情報から動的インベントリを生成
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    snapshot_name: emulated_asis
+  tasks:
+    - name: topology-data.json のパスを検出
+      ansible.builtin.set_fact:
+        topo_data_path: "{{ lookup('ansible.builtin.first_found', possible_paths) }}"
+      vars:
+        possible_paths:
+          - "/clab/clab-{{ snapshot_name }}/topology-data.json"
+          - "/clab/clab-emulated_asis/topology-data.json"
+          - "/clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../clab/clab-emulated/topology-data.json"
+          - "{{ playbook_dir }}/../../clab/clab-emulated/topology-data.json"
+          - "clab/clab-emulated/topology-data.json"
+          - "/home/mddo/playground/repos/mddo-worker/clab/clab-emulated/topology-data.json"
+
+    - name: topology-data.json をロード
+      ansible.builtin.slurp:
+        src: "{{ topo_data_path }}"
+      register: topo_raw
+
+    - name: 各ノードを動的インベントリに追加
+      vars:
+        topo_data: "{{ topo_raw.content | b64decode | from_json }}"
+      ansible.builtin.add_host:
+        name: "{{ item.value.labels['clab-node-longname'] | default(item.key) }}"
+        groups:
+          - "{{ item.value.labels['ansible-group'] | default(omit) }}"
+          - "cluster_{{ item.value.labels.clusterid | default('') }}"
+        redundant: "{{ item.value.labels.redundant | default('') }}"
+        clusterid: "{{ item.value.labels.clusterid | default('') }}"
+      loop: "{{ (topo_raw.content | b64decode | from_json).nodes | dict2items }}"
+      when:
+        - item.value.labels is defined
+        - item.value.labels.redundant is defined
+
+# 2. redundant の値 (act / sby) ごとに動的グループ化
+- name: redundant ごとに動的グループ化
+  hosts: junos
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: act / sby グループの作成
+      ansible.builtin.group_by:
+        key: "{{ redundant }}"
+      when: redundant is defined and redundant != ''
+
+# 3. vSRX (actノード) にコンフィグを投入
+- name: Collect Junos configuration from vSRX
+  hosts: junos:&act
+  gather_facts: false
+  #connection: ansible.netcommon.network_cli
+  connection: ansible.netcommon.netconf
+ 
+  vars:
+    snapshot_name: emulated_asis
+    ansible_command_timeout: 120
+    ansible_connect_timeout: 120
+    ansible_port: 22
+    ansible_host_key_checking: false
+    ansible_network_os: juniper.device.junos
+    ansible_user: root
+    ansible_password: password123
+    ansible_ssh_common_args: "-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+  tasks:
+    - name: Ansibleノード（localhost）にNETCONF用Pythonライブラリをインストール
+      ansible.builtin.pip:
+        name:
+          - ncclient
+          - xmltodict
+        state: present
+      # 対象機器(junos)へのタスク実行中であっても、このインストール処理はAnsibleノード自身(localhost)で行う
+      delegate_to: localhost
+      # 複数台への実行時でも、インストール処理は最初の1回だけ実行させる
+      run_once: true
+
+    - name: Load configuration from a local file and commit
+      juniper.device.junos_config:
+        backup: true
+        update: merge
+        # inventory_hostname (例: clab-emulated-site-a-fw-1) から
+        # 先頭の 'clab-emulated-' を削除し、末尾に '.conf' を付与してパスを組み立てる
+        src: "/clab/{{ inventory_hostname | regex_replace('^clab-' ~ snapshot_name ~ '-', '') }}.conf"
+        src_format: text
+        comment: updating config using Ansible
+      register: response
+      when: redundant == 'act'
+
+    - name: Run show configuration
+      juniper.device.junos_command:
+        commands:
+          - show configuration
+      register: result
+
+    - name: Print the response
+      ansible.builtin.debug:
+        var: response

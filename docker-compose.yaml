@@ -27,6 +27,9 @@ services:
       - type: bind
         source:  ${WORKERDIR}/clab
         target:  ${WORKERDIR}/clab
+      - type: bind
+        source:  /tmp/proxmox-shared/
+        target:  /tmp/proxmox-shared/
   eda-worker:
     privileged: true
     restart: on-failure
@@ -60,6 +63,9 @@ services:
       - type: bind
         source: ./playbooks/
         target: /playbooks
+      - type: bind
+        source:  /tmp/proxmox-shared/
+        target:  /tmp/proxmox-shared/
     command: ["ansible-rulebook","-r","/eda/rulebook.yaml","-i","/eda/hosts","-vvvv"]
   node_exporter:
     image: quay.io/prometheus/node-exporter:v1.8.2

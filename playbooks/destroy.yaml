@@ -4,51 +4,53 @@
   become: true
   vars:
     ansible_python_interpreter: /usr/bin/python3
-    with_clab: "{{ with_clab }}"
-    iperf_params_file:  "/clab/iperf_params.json"  # in remote host path
+    with_clab: "true"
+    iperf_params_file: "/clab/iperf_params.json"  # in remote host path
     remote_address: localhost
     conductor_address: "{{ remote_address }}:15000"
 
   tasks:
-    - shell: 'echo "job_status{jobname=\"Destroying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
+    - name: update job_status (Destroying_Containerlab=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"Destroying_Containerlab\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
 
     - name: "get clab topo yaml"
-      uri:
+      ansible.builtin.uri:
         url: "http://{{ conductor_address }}/topologies/{{ network_name }}/{{ snapshot_name }}/topology/layer3/containerlab_topology?image={{ crpd_image }}&bind_license=license.key:/tmp/license.key:ro&endpoint_image={{ endpoint_image }}"
         method: "GET"
         body_format: json
       register: containerlab
 
     - name: "delete ovs-br {{ item.key }}"
-      shell: "docker exec -it mddo-clab-docker  ovs-vsctl del-br {{ item.key }}"
-      when: with_clab == "true" and "ovs" in item.value.kind
-      loop: "{{ lookup( 'ansible.builtin.dict', containerlab.json.topology.nodes) }}"
+      ansible.builtin.shell: "docker exec mddo-clab-docker ovs-vsctl del-br {{ item.key }}"
+      when: (with_clab | bool) and ("ovs" in item.value.kind)
+      loop: "{{ lookup('ansible.builtin.dict', containerlab.json.topology.nodes) }}"
       ignore_errors: true
 
     - name: find clab-topo.yaml
-      shell:
+      ansible.builtin.shell:
         cmd: "ls | grep clab-topo.yaml"
-      args:
         chdir: "/clab"
       register: exist_topo
       ignore_errors: true
 
     - name: Creating clab-topo.yaml
-      copy:
+      ansible.builtin.copy:
         dest: "/clab/clab-topo.yaml"
-        content: "{{ containerlab.json | to_yaml }}"
+        content: "{{ containerlab.json | to_nice_yaml }}"
       when: "'clab-topo.yaml' not in exist_topo.stdout_lines"
 
     - name: destroy containerlab
-      shell:
+      ansible.builtin.shell:
         cmd: "docker exec mddo-clab-docker containerlab destroy --topo clab-topo.yaml --cleanup"
-      when: with_clab == "true"
+      when: with_clab | bool
 
-    - shell: 'echo "job_status{jobname=\"DestroyJob_Complete\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+    - name: update job_status (DestroyJob_Complete=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"DestroyJob_Complete\",network_name=\"{{ network_name }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
 
     - name: pause
-      pause:
+      ansible.builtin.pause:
         seconds: 10
 
-    - shell: 'echo "job_status{jobname=\"\",network_name=\"\",snapshot_name=\"\"} 0" > /prom/textfile.prom'
+    - name: reset job_status
+      ansible.builtin.shell: 'echo "job_status{jobname=\"\",network_name=\"\",snapshot_name=\"\"} 0" > /prom/textfile.prom'
 

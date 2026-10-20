@@ -1,6 +1,7 @@
 ---
 - name: deploycontainerlab
-  hosts: localhost
+  hosts: all
+  execution_strategy: parallel
 
   sources:
     - ansible.eda.webhook:
@@ -65,3 +66,52 @@
             operation: "{{ event.payload.operation }}"
             bridge_name: "{{ event.payload.bridge_name }}"
             port_name: "{{ event.payload.port_name }}"
+    - name: route vsrx ha deployment
+      condition: event.payload.message == "vsrx_ha"
+      action:
+        post_event:
+          ruleset: "parallel_vsrx_ha"
+          event:
+            snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
+            message: "{{ event.payload.message }}"
+            cluster_id: "{{ event.payload.cluster_id | default(1) }}"
+            password: "{{ event.payload.password | default('password123') }}"
+            remote_address: "{{ event.payload.remote_address }}"
+            num_if: "{{ event.payload.num_if | default(5) }}"
+            node_0_id: "{{ event.payload.node_0_id | default(0) }}"
+            node_1_id: "{{ event.payload.node_1_id | default(1) }}"
+            node_0_ip: "{{ event.payload.node_0_ip | default('192.168.100.2/24') }}"
+            node_1_ip: "{{ event.payload.node_1_ip | default('192.168.100.3/24') }}"
+            node_0_if: "{{ event.payload.node_0_if | default('ge-0/0/0') }}"
+            node_1_if: "{{ event.payload.node_1_if | default('ge-7/0/0') }}"
+    - name: vsrx config
+      condition: event.payload.message == "vsrx_config"
+      action:
+        run_playbook:
+          name: "/playbooks/vsrx_config.yaml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
+
+- name: parallel_vsrx_ha
+  hosts: localhost
+  execution_strategy: parallel
+  sources: []
+
+  rules:
+    - name: vsrx ha deployment parallel
+      condition: event.message == "vsrx_ha"
+      action:
+        run_playbook:
+          name: "/playbooks/vsrx_ha.yaml"
+          extra_vars:
+            snapshot_name: "{{ event.snapshot_name | default('emulated_asis') }}"
+            cluster_id: "{{ event.cluster_id }}"
+            password: "{{ event.password }}"
+            remote_address: "{{ event.remote_address }}"
+            num_if: "{{ event.num_if }}"
+            node_0_id: "{{ event.node_0_id }}"
+            node_1_id: "{{ event.node_1_id }}"
+            node_0_ip: "{{ event.node_0_ip }}"
+            node_1_ip: "{{ event.node_1_ip }}"
+            node_0_if: "{{ event.node_0_if }}"
+            node_1_if: "{{ event.node_1_if }}"

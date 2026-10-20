@@ -1,0 +1,57 @@
+---
+- name: Configure vSRX on Proxmox containers via Docker
+  hosts: localhost
+  connection: local
+  become: true
+  gather_facts: false
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  tasks:
+    - name: 実行対象のコンテナ名を取得
+      ansible.builtin.shell: >-
+        docker exec mddo-clab-docker containerlab inspect --all --format json |
+        jq -r '.emulated[] | select( .image | contains("proxmox")) | .name'
+      register: target_containers
+      changed_when: false
+
+    - name: 取得した各コンテナに対して設定スクリプトを実行
+      ansible.builtin.shell: |
+        cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
+        mkdir -p /tmp/vsrx-config
+
+        # 2. ハッシュを埋め込んだ設定ファイルを再生成 (変数を展開するため EOF をクォートしません)
+        # juniper.conf ファイルの作成
+        cat << 'EOF' > /tmp/vsrx-config/juniper.conf
+        system {
+            root-authentication {
+                encrypted-password "$6$Iw7mIVeP$1IUHByxXtrCMO2QiOL4bTtIXJrlMiOS9NCAaCJX4ixTXLAmK/U1ITqrs8uBsV.LlKTJCreN/3yuOEmC7l7/Aa/"; ## SECRET-DATA
+            }
+            services {
+                ssh {
+                    root-login allow;
+                }
+            }
+        }
+        interfaces {
+            fxp0 {
+                unit 0 {
+                    family inet {
+                        address 192.168.100.2/24;
+                    }
+                }
+            }
+        }
+        EOF
+
+        genisoimage -o /var/lib/vz/template/iso/vsrx-config.iso -r -J /tmp/vsrx-config/
+
+        # 先ほど作った設定ファイル入りISOをCD-ROMとしてマウント
+        qm set 100 --ide2 local:iso/vsrx-config.iso,media=cdrom
+        qm set 100 --boot order=scsi0
+
+        ip addr add 192.168.100.1/24 dev vmbr1
+        ip link set vmbr1 up
+        SCRIPT_EOF
+      loop: "{{ target_containers.stdout_lines | default([]) }}"
+      register: exec_results
+      changed_when: true
