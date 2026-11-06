@@ -91,6 +91,17 @@
           name: "/playbooks/vsrx_config.yaml"
           extra_vars:
             snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
+    - name: inject/recover vsrx fault (link/node/silent)
+      condition: event.payload.message == "fw_fault"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_fault.yaml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
+            node: "{{ event.payload.node }}"
+            mode: "{{ event.payload.mode | default('link') }}"
+            state: "{{ event.payload.state | default('down') }}"
+            interfaces: "{{ event.payload.interfaces | default('') }}"
 
 - name: parallel_vsrx_ha
   hosts: localhost
