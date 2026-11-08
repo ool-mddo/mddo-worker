@@ -93,6 +93,9 @@
         src_format: text
         comment: updating config using Ansible
       register: response
+      until: response is succeeded
+      retries: 6
+      delay: 15
       when: redundant == 'act'
 
     - name: Run show configuration
