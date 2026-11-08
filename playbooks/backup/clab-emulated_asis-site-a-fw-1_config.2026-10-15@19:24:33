@@ -1,0 +1,91 @@
+set version 20190319.203446_builder.r1013243
+set groups node0 system host-name site-a-fw-1
+set groups node0 interfaces fxp0 unit 0 family inet address 192.168.100.2/24
+set groups node1 system host-name site-a-fw-2
+set groups node1 interfaces fxp0 unit 0 family inet address 192.168.100.3/24
+set apply-groups "${node}"
+set system login user vrnetlab uid 2000
+set system login user vrnetlab class super-user
+set system login user vrnetlab authentication encrypted-password "$6$CDmzGe/d$g43HmhI3FA.21JCYppnTg1h4q/JO4DOHSICLhhavqBem5zUTgKEcg5m9tBG1Ik6qmfb7L3v.wgj4/DkfgZejO0"
+set system root-authentication encrypted-password "$6$Wt7I8QLq$3TB.yBWooA9JxW/JjRVsFfpzhRKAKftH7mxweAl9wqqqIIvo9ekOrZ8Dm6HHXj87jvp/RVoSqDJzbiivMXTqs/"
+set system services ssh root-login allow
+set system services netconf ssh
+set system services web-management http interface fxp0.0
+set system host-name vsrx
+set system syslog user * any emergency
+set system syslog file messages any any
+set system syslog file messages authorization info
+set system syslog file interactive-commands interactive-commands any
+set system license autoupdate url https://ae1.juniper.net/junos/key_retrieval
+set chassis cluster reth-count 1
+set chassis cluster redundancy-group 0 node 0 priority 100
+set chassis cluster redundancy-group 0 node 1 priority 1
+set chassis cluster redundancy-group 1 node 0 priority 100
+set chassis cluster redundancy-group 1 node 1 priority 1
+set security screen ids-option untrust-screen icmp ping-death
+set security screen ids-option untrust-screen ip source-route-option
+set security screen ids-option untrust-screen ip tear-drop
+set security screen ids-option untrust-screen tcp syn-flood alarm-threshold 1024
+set security screen ids-option untrust-screen tcp syn-flood attack-threshold 200
+set security screen ids-option untrust-screen tcp syn-flood source-threshold 1024
+set security screen ids-option untrust-screen tcp syn-flood destination-threshold 2048
+set security screen ids-option untrust-screen tcp syn-flood queue-size 2000
+set security screen ids-option untrust-screen tcp syn-flood timeout 20
+set security screen ids-option untrust-screen tcp land
+set security policies from-zone trust to-zone trust policy default-permit match source-address any
+set security policies from-zone trust to-zone trust policy default-permit match destination-address any
+set security policies from-zone trust to-zone trust policy default-permit match application any
+set security policies from-zone trust to-zone trust policy default-permit then permit
+set security policies from-zone trust to-zone untrust policy default-permit match source-address any
+set security policies from-zone trust to-zone untrust policy default-permit match destination-address any
+set security policies from-zone trust to-zone untrust policy default-permit match application any
+set security policies from-zone trust to-zone untrust policy default-permit then permit
+set security policies from-zone WAN to-zone LAN policy DEFAULT match source-address any
+set security policies from-zone WAN to-zone LAN policy DEFAULT match destination-address any
+set security policies from-zone WAN to-zone LAN policy DEFAULT match application any
+set security policies from-zone WAN to-zone LAN policy DEFAULT then deny
+set security policies from-zone LAN to-zone WAN policy DEFAULT match source-address any
+set security policies from-zone LAN to-zone WAN policy DEFAULT match destination-address any
+set security policies from-zone LAN to-zone WAN policy DEFAULT match application any
+set security policies from-zone LAN to-zone WAN policy DEFAULT then permit
+set security zones security-zone trust tcp-rst
+set security zones security-zone untrust screen untrust-screen
+set security zones security-zone WAN host-inbound-traffic system-services all
+set security zones security-zone WAN host-inbound-traffic protocols all
+set security zones security-zone WAN interfaces ge-0/0/1.0
+set security zones security-zone WAN interfaces ge-7/0/1.0
+set security zones security-zone LAN host-inbound-traffic system-services all
+set security zones security-zone LAN host-inbound-traffic protocols all
+set security zones security-zone LAN interfaces ge-0/0/2.0
+set security zones security-zone LAN interfaces ge-7/0/2.0
+set interfaces ge-0/0/1 description to_Seg-172.16.1.0-30_Ethernet2
+set interfaces ge-0/0/1 unit 0 family inet address 172.16.1.2/30
+set interfaces ge-0/0/2 description to_Seg-192.168.1.0-30_Ethernet1
+set interfaces ge-0/0/2 unit 0 family inet address 192.168.1.1/30
+set interfaces ge-7/0/1 description to_site-a-br-2_ge-0/0/3
+set interfaces ge-7/0/1 unit 0 family inet address 172.16.2.2/30
+set interfaces ge-7/0/2 description to_site-a-cr-2_ge-0/0/0
+set interfaces ge-7/0/2 unit 0 family inet address 192.168.2.1/30
+set interfaces fab0 fabric-options member-interfaces ge-0/0/0
+set interfaces fab1 fabric-options member-interfaces ge-7/0/0
+set interfaces fxp0 unit 0
+set protocols ospf area 0.0.0.10 interface ge-0/0/1.0 interface-type p2p
+set protocols ospf area 0.0.0.10 interface ge-0/0/1.0 metric 1
+set protocols ospf area 0.0.0.10 interface ge-0/0/1.0 priority 10
+set protocols ospf area 0.0.0.10 interface ge-0/0/1.0 hello-interval 10
+set protocols ospf area 0.0.0.10 interface ge-0/0/1.0 dead-interval 40
+set protocols ospf area 0.0.0.10 interface ge-0/0/2.0 interface-type p2p
+set protocols ospf area 0.0.0.10 interface ge-0/0/2.0 metric 1
+set protocols ospf area 0.0.0.10 interface ge-0/0/2.0 priority 10
+set protocols ospf area 0.0.0.10 interface ge-0/0/2.0 hello-interval 10
+set protocols ospf area 0.0.0.10 interface ge-0/0/2.0 dead-interval 40
+set protocols ospf area 0.0.0.10 interface ge-7/0/1.0 interface-type p2p
+set protocols ospf area 0.0.0.10 interface ge-7/0/1.0 metric 1
+set protocols ospf area 0.0.0.10 interface ge-7/0/1.0 priority 10
+set protocols ospf area 0.0.0.10 interface ge-7/0/1.0 hello-interval 10
+set protocols ospf area 0.0.0.10 interface ge-7/0/1.0 dead-interval 40
+set protocols ospf area 0.0.0.10 interface ge-7/0/2.0 interface-type p2p
+set protocols ospf area 0.0.0.10 interface ge-7/0/2.0 metric 1
+set protocols ospf area 0.0.0.10 interface ge-7/0/2.0 priority 10
+set protocols ospf area 0.0.0.10 interface ge-7/0/2.0 hello-interval 10
+set protocols ospf area 0.0.0.10 interface ge-7/0/2.0 dead-interval 40

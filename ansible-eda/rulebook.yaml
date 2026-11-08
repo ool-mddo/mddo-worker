@@ -80,8 +80,8 @@
             num_if: "{{ event.payload.num_if | default(5) }}"
             node_0_id: "{{ event.payload.node_0_id | default(0) }}"
             node_1_id: "{{ event.payload.node_1_id | default(1) }}"
-            node_0_ip: "{{ event.payload.node_0_ip | default('192.168.100.2/24') }}"
-            node_1_ip: "{{ event.payload.node_1_ip | default('192.168.100.3/24') }}"
+            node_0_ip: "{{ event.payload.node_0_ip | default('169.254.100.2/24') }}"
+            node_1_ip: "{{ event.payload.node_1_ip | default('169.254.100.3/24') }}"
             node_0_if: "{{ event.payload.node_0_if | default('ge-0/0/0') }}"
             node_1_if: "{{ event.payload.node_1_if | default('ge-7/0/0') }}"
     - name: vsrx config
@@ -91,6 +91,59 @@
           name: "/playbooks/vsrx_config.yaml"
           extra_vars:
             snapshot_name: "{{ event.payload.snapshot_name | default('emulated_asis') }}"
+    - name: fw demo site (deploy + test + client demo)
+      condition: event.payload.message == "fw_demo" and (event.payload.action is not defined or event.payload.action == "all")
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/site.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+            demo_expected: "{{ event.payload.demo_expected | default('allow') }}"
+            client_resolver_mode: "{{ event.payload.client_resolver_mode | default('resolv_conf') }}"
+            demo_fail_on_mismatch: "{{ event.payload.demo_fail_on_mismatch | default(true) }}"
+            demo_step_pause: false
+            target_client_group: "{{ event.payload.target_client_group | default('demo_clients') }}"
+    - name: fw demo setup network
+      condition: event.payload.message == "fw_demo" and event.payload.action == "setup_network"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/01_setup_network.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+    - name: fw demo deploy servers
+      condition: event.payload.message == "fw_demo" and event.payload.action == "deploy"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/10_deploy_servers.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+    - name: fw demo test servers
+      condition: event.payload.message == "fw_demo" and event.payload.action == "test"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/20_test_servers.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+    - name: fw demo clients
+      condition: event.payload.message == "fw_demo" and event.payload.action == "demo"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/30_demo_clients.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+            demo_expected: "{{ event.payload.demo_expected | default('allow') }}"
+            client_resolver_mode: "{{ event.payload.client_resolver_mode | default('resolv_conf') }}"
+            demo_fail_on_mismatch: "{{ event.payload.demo_fail_on_mismatch | default(true) }}"
+            demo_step_pause: false
+            target_client_group: "{{ event.payload.target_client_group | default('demo_clients') }}"
+    - name: fw demo cleanup
+      condition: event.payload.message == "fw_demo" and event.payload.action == "cleanup"
+      action:
+        run_playbook:
+          name: "/playbooks/fw_demo/90_cleanup.yml"
+          extra_vars:
+            snapshot_name: "{{ event.payload.snapshot_name | default('') }}"
+            cleanup_servers: "{{ event.payload.cleanup_servers | default(false) }}"
 
 - name: parallel_vsrx_ha
   hosts: localhost

@@ -1,0 +1,83 @@
+---
+# デモ後の後片付け
+#   クライアント : /etc/resolv.conf を元に戻し、一時ファイルを削除
+#   サーバ       : -e cleanup_servers=true のときのみ dnsmasq / nginx を停止し設定を削除
+- name: インベントリ準備
+  ansible.builtin.import_playbook: 00_load_inventory.yml
+
+- name: クライアントの復元
+  hosts: demo_clients
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tasks:
+    - name: resolv.conf を元に戻す
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            set -eu
+            if [ -e /etc/resolv.conf.mddo-orig ]; then
+              cat /etc/resolv.conf.mddo-orig > /etc/resolv.conf
+              rm -f /etc/resolv.conf.mddo-orig
+              echo RESULT=changed
+            fi
+            rm -f /tmp/mddo-demo-index.html
+      register: restore
+      changed_when: "'RESULT=changed' in restore.stdout"
+
+- name: サーバの停止
+  hosts: servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  vars:
+    cleanup_servers: false
+  tasks:
+    - name: dnsmasq 停止と設定削除
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            if [ -e {{ demo_conf_dir }}/dnsmasq.conf ]; then
+              pkill -x dnsmasq || true
+              rm -rf {{ demo_conf_dir }} {{ dns_pid_file }}
+              echo RESULT=changed
+            fi
+      register: dns_stop
+      changed_when: "'RESULT=changed' in dns_stop.stdout"
+      when:
+        - cleanup_servers | bool
+        - inventory_hostname in groups['dns_servers']
+
+    - name: nginx のデモ設定削除と停止
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            if [ -e /etc/nginx/sites-enabled/mddo-demo.conf ]; then
+              rm -f /etc/nginx/sites-enabled/mddo-demo.conf
+              rm -rf {{ demo_web_root }}
+              [ -e /etc/nginx/sites-available/default ] && ln -sf /etc/nginx/sites-available/default /etc/nginx/sites-enabled/default
+              nginx -s quit 2>/dev/null || true
+              echo RESULT=changed
+            fi
+      register: web_stop
+      changed_when: "'RESULT=changed' in web_stop.stdout"
+      when:
+        - cleanup_servers | bool
+        - inventory_hostname in groups['web_servers']

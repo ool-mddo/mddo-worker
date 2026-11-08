@@ -1,0 +1,12 @@
+---
+# 一括実行: サーバ構築 → サーバテスト → クライアントデモ
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook site.yml
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook site.yml -e demo_expected=deny
+- name: サーバ構築
+  ansible.builtin.import_playbook: 10_deploy_servers.yml
+
+- name: サーバテスト
+  ansible.builtin.import_playbook: 20_test_servers.yml
+
+- name: クライアントデモ
+  ansible.builtin.import_playbook: 30_demo_clients.yml

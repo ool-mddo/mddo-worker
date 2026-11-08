@@ -1,0 +1,40 @@
+---
+# EDA Webhook (-i /eda/hosts) や -i オプション省略での直接実行時に、
+# inventory/hosts.yml のホスト・グループをインメモリインベントリへ動的登録する。
+# 既に -i inventory/hosts.yml（または ansible.cfg）で読み込まれている場合はスキップする。
+- name: インベントリ動的ロード（未ロード時のみ）
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [always]
+  tasks:
+    - name: inventory/hosts.yml からホストとグループを登録
+      when: groups['lab_hosts'] is not defined
+      vars:
+        _hosts_yaml: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/inventory/hosts.yml') | from_yaml }}"
+        _host_entries: >-
+          {%- set out = [] -%}
+          {%- set lab = _hosts_yaml.all.children.lab_hosts.children -%}
+          {%- for srv_grp, srv_data in lab.servers.children.items() -%}
+          {%-   for h, hvars in srv_data.hosts.items() -%}
+          {%-     set _ = out.append({'name': h, 'groups': ['lab_hosts', 'servers', srv_grp], 'vars': hvars}) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {%- for cli_grp, cli_data in lab.demo_clients.children.items() -%}
+          {%-   for h, hvars in cli_data.hosts.items() -%}
+          {%-     set _ = out.append({'name': h, 'groups': ['lab_hosts', 'demo_clients', cli_grp], 'vars': hvars}) -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {{ out }}
+      ansible.builtin.add_host:
+        name: "{{ item.name }}"
+        groups: "{{ item.groups }}"
+        host_ip: "{{ item.vars.host_ip }}"
+        host_prefixlen: "{{ item.vars.host_prefixlen }}"
+        host_gateway: "{{ item.vars.host_gateway }}"
+        host_if: "{{ item.vars.host_if }}"
+        container_name: "{{ item.vars.container_name | default(omit) }}"
+      loop: "{{ _host_entries }}"
+      loop_control:
+        label: "{{ item.name }}"
+      changed_when: false

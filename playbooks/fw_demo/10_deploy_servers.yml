@@ -1,0 +1,151 @@
+---
+# site-a のサーバを構築する
+#   site-a-host-1 : DNS サーバ (dnsmasq)
+#   site-a-host-2 : Web サーバ (nginx)
+# コンテナに systemd / python は無いため、docker exec (sh) でデーモンを直接起動する
+- name: インベントリ準備
+  ansible.builtin.import_playbook: 00_load_inventory.yml
+
+- name: DNS サーバ構築 (dnsmasq)
+  hosts: dns_servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [dns]
+  tasks:
+    - name: 必要コマンドの確認
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - "command -v dnsmasq && command -v dig && command -v ps"
+      changed_when: false
+
+    - name: 設定ファイル配置
+      ansible.builtin.include_tasks: tasks/put_files.yml
+      vars:
+        put_files:
+          - dest: "{{ demo_conf_dir }}/dnsmasq.conf"
+            content: "{{ lookup('ansible.builtin.template', 'dnsmasq.conf.j2') }}"
+
+    - name: 設定ファイルの構文チェック
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - "dnsmasq --test --conf-file={{ demo_conf_dir }}/dnsmasq.conf"
+      changed_when: false
+
+    - name: dnsmasq 起動（設定変更時・未起動時のみ再起動）
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            set -eu
+            # コンテナの PID1 はゾンビを回収しないため、STAT が Z のプロセスは停止扱いにする
+            alive() { ps -C "$1" -o stat= 2>/dev/null | grep -qv '^Z'; }
+            running=no
+            if [ -s {{ dns_pid_file }} ] && ps -o stat= -p "$(cat {{ dns_pid_file }})" 2>/dev/null | grep -qv '^Z'; then running=yes; fi
+            if [ "$running" = yes ] && [ {{ (put_files_result is changed) | ternary('yes', 'no') }} = no ]; then
+              echo RESULT=unchanged; exit 0
+            fi
+            # 既存の dnsmasq（パッケージ既定設定で起動されたもの含む）を停止して起動し直す
+            pkill -x dnsmasq 2>/dev/null || true
+            i=0; while alive dnsmasq && [ $i -lt 10 ]; do sleep 0.5; i=$((i+1)); done
+            touch {{ dns_log_file }}
+            dnsmasq --conf-file={{ demo_conf_dir }}/dnsmasq.conf
+            sleep 1
+            ps -o stat= -p "$(cat {{ dns_pid_file }})" | grep -qv '^Z'
+            echo RESULT=changed
+      register: dns_start
+      changed_when: "'RESULT=changed' in dns_start.stdout"
+
+- name: Web サーバ構築 (nginx)
+  hosts: web_servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [web]
+  tasks:
+    - name: 必要コマンドの確認
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - "command -v nginx && command -v curl && command -v ps"
+      changed_when: false
+
+    - name: コンテンツと設定ファイル配置
+      ansible.builtin.include_tasks: tasks/put_files.yml
+      vars:
+        put_files:
+          - dest: "{{ demo_web_root }}/index.html"
+            content: "{{ lookup('ansible.builtin.template', 'index.html.j2') }}"
+          - dest: /etc/nginx/sites-enabled/mddo-demo.conf
+            content: "{{ lookup('ansible.builtin.template', 'nginx-mddo-demo.conf.j2') }}"
+
+    - name: 既定サイトを無効化（default_server の競合回避）
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            if [ -e /etc/nginx/sites-enabled/default ] || [ -L /etc/nginx/sites-enabled/default ]; then
+              rm -f /etc/nginx/sites-enabled/default; echo RESULT=changed
+            fi
+      register: nginx_default
+      changed_when: "'RESULT=changed' in nginx_default.stdout"
+
+    - name: 設定ファイルの構文チェック
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - "nginx -t 2>&1"
+      changed_when: false
+
+    - name: nginx 起動（未起動なら起動、設定変更時は reload）
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            set -eu
+            alive() { ps -C "$1" -o stat= 2>/dev/null | grep -qv '^Z'; }
+            if alive nginx; then
+              if [ {{ (put_files_result is changed or nginx_default is changed) | ternary('yes', 'no') }} = yes ]; then
+                nginx -s reload; echo RESULT=changed
+              else
+                echo RESULT=unchanged
+              fi
+            else
+              nginx; echo RESULT=changed
+            fi
+            sleep 1
+            alive nginx
+      register: web_start
+      changed_when: "'RESULT=changed' in web_start.stdout"

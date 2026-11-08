@@ -1,0 +1,265 @@
+---
+# クライアント（site-b / site-c）からのデモシナリオ
+#   STEP0 クライアント情報（アドレス / site-a への経路）
+#   STEP1 site-a サーバへの到達性（ping: FW で許可されているため常に成功を期待）
+#   STEP2 site-a DNS へ直接問い合わせ（dig）               ← FW ポリシー依存
+#   STEP3 HTTP GET（IP 直指定 / DNS 非依存）                 ← FW ポリシー依存
+#   STEP4 リゾルバを site-a DNS に設定し OS で名前解決      ← FW ポリシー依存
+#   STEP5 FQDN で HTTP GET（名前解決 → GET の一連の流れ）  ← FW ポリシー依存
+#   最後に全クライアントの結果をマトリクス表示
+#
+# 例:
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook 30_demo_clients.yml
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook 30_demo_clients.yml -e demo_expected=deny
+#   docker exec -it -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook 30_demo_clients.yml -e demo_step_pause=true -l site_b_clients
+- name: インベントリ準備
+  ansible.builtin.import_playbook: 00_load_inventory.yml
+
+- name: クライアントからのデモシナリオ
+  hosts: "{{ target_client_group | default('demo_clients') }}"
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  vars:
+    _dig: "dig +time={{ dns_timeout }} +tries=1"
+    _curl: "curl -sS --connect-timeout {{ http_connect_timeout }} --max-time {{ http_max_time }}"
+    _curl_fmt: "-o /tmp/mddo-demo-index.html -w 'http_code=%{http_code} remote_ip=%{remote_ip} time=%{time_total}s\\n'"
+    _grep_marker: "grep -o '{{ web_marker }}[^<]*' /tmp/mddo-demo-index.html"
+    _http_expect: "http_code=200[\\s\\S]*{{ web_marker }}"
+  pre_tasks:
+    - name: デモ条件
+      ansible.builtin.debug:
+        msg:
+          - "DNS サーバ : {{ dns_server_host }} {{ dns_fqdn }} ({{ dns_server_ip }})"
+          - "Web サーバ : {{ web_server_host }} {{ web_fqdn }} ({{ web_server_ip }})"
+          - "対象コンテナプレフィックス: {{ clab_prefix }}"
+          - "FW 期待状態: {{ demo_expected }}（DNS/HTTP が {{ 'site-a FW を通過できること' if demo_expected == 'allow' else 'site-a FW で遮断されること' }}）"
+          - "名前解決方式: {{ client_resolver_mode }}"
+      run_once: true
+      tags: [always]
+
+    - name: パラメータ確認
+      ansible.builtin.assert:
+        that:
+          - demo_expected in ['allow', 'deny']
+          - client_resolver_mode in ['resolv_conf', 'none']
+        quiet: true
+      run_once: true
+      tags: [always]
+
+    - name: 前回結果のクリア
+      ansible.builtin.set_fact:
+        check_results: []
+      tags: [always]
+
+  tasks:
+    # ---------------------------------------------------------------- STEP0
+    - name: STEP0 クライアント情報
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - >-
+            echo "host=$(hostname)";
+            ip -4 -br addr show dev {{ host_if }};
+            ip -4 route get {{ dns_server_ip }};
+            ip -4 route get {{ web_server_ip }}
+      register: step0
+      changed_when: false
+      failed_when: false
+      tags: [info]
+
+    - name: STEP0 結果
+      ansible.builtin.debug:
+        msg: "{{ step0.stdout_lines }}"
+      tags: [info]
+
+    # ---------------------------------------------------------------- STEP1
+    - name: STEP1 到達性確認 (ping)
+      ansible.builtin.include_tasks:
+        file: tasks/run_checks.yml
+        apply:
+          tags: [ping]
+      vars:
+        check_title: "STEP1 到達性確認 ({{ inventory_hostname }} → site-a)"
+        checks:
+          - id: ping_dns
+            desc: "DNS サーバ {{ dns_server_ip }} へ ping"
+            cmd: "ping -c {{ ping_count }} -w {{ ping_count + 2 }} {{ dns_server_ip }} | tail -n 2"
+            expect: " 0% packet loss"
+          - id: ping_web
+            desc: "Web サーバ {{ web_server_ip }} へ ping"
+            cmd: "ping -c {{ ping_count }} -w {{ ping_count + 2 }} {{ web_server_ip }} | tail -n 2"
+            expect: " 0% packet loss"
+      tags: [ping]
+
+    - name: STEP1 一時停止
+      ansible.builtin.pause:
+        prompt: "STEP1 完了。Enter で STEP2（DNS 問い合わせ）へ"
+      when: demo_step_pause | bool
+      tags: [ping]
+
+    # ---------------------------------------------------------------- STEP2
+    - name: STEP2 DNS 問い合わせ (dig)
+      ansible.builtin.include_tasks:
+        file: tasks/run_checks.yml
+        apply:
+          tags: [dns]
+      vars:
+        check_title: "STEP2 DNS 問い合わせ ({{ inventory_hostname }} → {{ dns_server_ip }}:53)"
+        checks:
+          - id: dns_query
+            desc: "dig @{{ dns_server_ip }} {{ web_fqdn }} (UDP)"
+            cmd: "{{ _dig }} @{{ dns_server_ip }} {{ web_fqdn }} A +short"
+            expect: "^{{ web_server_ip | regex_escape }}$"
+            policy: true
+      tags: [dns]
+
+    - name: STEP2 一時停止
+      ansible.builtin.pause:
+        prompt: "STEP2 完了。Enter で STEP3（HTTP / IP 直指定）へ"
+      when: demo_step_pause | bool
+      tags: [dns]
+
+    # ---------------------------------------------------------------- STEP3
+    - name: STEP3 HTTP GET（IP 直指定）
+      ansible.builtin.include_tasks:
+        file: tasks/run_checks.yml
+        apply:
+          tags: [http]
+      vars:
+        check_title: "STEP3 HTTP GET ({{ inventory_hostname }} → {{ web_server_ip }}:80, DNS 非依存)"
+        checks:
+          - id: http_by_ip
+            desc: "http://{{ web_server_ip }}/ を GET"
+            cmd: "{{ _curl }} {{ _curl_fmt }} http://{{ web_server_ip }}/ && {{ _grep_marker }}"
+            expect: "{{ _http_expect }}"
+            policy: true
+      tags: [http]
+
+    - name: STEP3 一時停止
+      ansible.builtin.pause:
+        prompt: "STEP3 完了。Enter で STEP4（OS リゾルバでの名前解決）へ"
+      when: demo_step_pause | bool
+      tags: [http]
+
+    # ---------------------------------------------------------------- STEP4
+    - name: STEP4 リゾルバを site-a DNS に設定
+      when: client_resolver_mode == 'resolv_conf'
+      tags: [resolve]
+      block:
+        - name: STEP4 /etc/resolv.conf をバックアップして書き換え
+          # Docker の resolv.conf は bind mount のため mv ではなく上書きで書き込む
+          ansible.builtin.command:
+            argv:
+              - docker
+              - exec
+              - "{{ target_container }}"
+              - sh
+              - -c
+              - |
+                set -eu
+                [ -e /etc/resolv.conf.mddo-orig ] || cp -p /etc/resolv.conf /etc/resolv.conf.mddo-orig
+                new={{ _resolv | quote }}
+                if [ "$(cat /etc/resolv.conf)" = "$new" ]; then echo RESULT=unchanged; exit 0; fi
+                printf '%s\n' "$new" > /etc/resolv.conf
+                echo RESULT=changed
+          vars:
+            _resolv: |-
+              # Managed by Ansible (mddo-fw demo) - original: /etc/resolv.conf.mddo-orig
+              nameserver {{ dns_server_ip }}
+              search {{ demo_domain }}
+              options timeout:{{ dns_timeout }} attempts:1
+          register: resolv_result
+          changed_when: "'RESULT=changed' in resolv_result.stdout"
+
+        - name: STEP4 OS リゾルバでの名前解決
+          ansible.builtin.include_tasks:
+            file: tasks/run_checks.yml
+            apply:
+              tags: [resolve]
+          vars:
+            check_title: "STEP4 OS リゾルバで名前解決 ({{ inventory_hostname }})"
+            checks:
+              - id: resolve_os
+                desc: "getent hosts {{ web_fqdn }}"
+                cmd: "getent hosts {{ web_fqdn }}"
+                expect: "^{{ web_server_ip | regex_escape }}\\s+{{ web_fqdn | regex_escape }}"
+                policy: true
+
+        - name: STEP4 一時停止
+          ansible.builtin.pause:
+            prompt: "STEP4 完了。Enter で STEP5（FQDN で HTTP GET）へ"
+          when: demo_step_pause | bool
+
+    # ---------------------------------------------------------------- STEP5
+    - name: STEP5 FQDN で HTTP GET（名前解決 → GET）
+      ansible.builtin.include_tasks:
+        file: tasks/run_checks.yml
+        apply:
+          tags: [http]
+      vars:
+        check_title: "STEP5 http://{{ web_fqdn }}/ を GET ({{ inventory_hostname }})"
+        checks:
+          - id: http_fqdn
+            desc: "http://{{ web_fqdn }}/ を GET（{{ 'OS リゾルバ' if client_resolver_mode == 'resolv_conf' else 'dig 結果を --resolve' }}）"
+            cmd: >-
+              {% if client_resolver_mode == 'resolv_conf' %}
+              {{ _curl }} {{ _curl_fmt }} http://{{ web_fqdn }}/ && {{ _grep_marker }}
+              {% else %}
+              ip=$({{ _dig }} @{{ dns_server_ip }} {{ web_fqdn }} A +short | grep -E '^[0-9.]+$' | head -n1);
+              [ -n "$ip" ] || { echo 'DNS 解決失敗'; exit 1; };
+              {{ _curl }} --resolve "{{ web_fqdn }}:80:$ip" {{ _curl_fmt }} http://{{ web_fqdn }}/ && {{ _grep_marker }}
+              {% endif %}
+            expect: "{{ _http_expect }}"
+            policy: true
+      tags: [http]
+
+  post_tasks:
+    # ---------------------------------------------------------------- SUMMARY
+    - name: 結果サマリ（全クライアント）
+      ansible.builtin.debug:
+        msg: >-
+          {%- set hosts = ansible_play_hosts_all | select('in', hostvars) | list -%}
+          {%- set ns = namespace(ids=[], lines=[]) -%}
+          {%- for h in hosts -%}
+          {%-   for c in hostvars[h].check_results | default([]) -%}
+          {%-     if c.id not in ns.ids -%}{%- set ns.ids = ns.ids + [c.id] -%}{%- endif -%}
+          {%-   endfor -%}
+          {%- endfor -%}
+          {%- set hdr = namespace(cells=[]) -%}
+          {%- for i in ns.ids -%}{%- set hdr.cells = hdr.cells + ['%-11s' | format(i[:11])] -%}{%- endfor -%}
+          {%- set ns.lines = ns.lines + ['%-14s ' | format('client') ~ (hdr.cells | join(' ')) ~ ' verdict'] -%}
+          {%- for h in hosts -%}
+          {%-   set res = hostvars[h].check_results | default([]) -%}
+          {%-   set row = namespace(cells=[], ng=0) -%}
+          {%-   for i in ns.ids -%}
+          {%-     set m = res | selectattr('id', 'equalto', i) | list -%}
+          {%-     if m | length == 0 -%}
+          {%-       set cell = '-' -%}
+          {%-     else -%}
+          {%-       set cell = ('PASS' if m[0].success | bool else 'FAIL') ~ ('' if m[0].ok | bool else '(!)') -%}
+          {%-       if not (m[0].ok | bool) -%}{%- set row.ng = row.ng + 1 -%}{%- endif -%}
+          {%-     endif -%}
+          {%-     set row.cells = row.cells + ['%-11s' | format(cell)] -%}
+          {%-   endfor -%}
+          {%-   set ns.lines = ns.lines + ['%-14s ' | format(h) ~ (row.cells | join(' ')) ~ ' ' ~ ('OK' if row.ng == 0 else 'NG(' ~ row.ng ~ ')')] -%}
+          {%- endfor -%}
+          {%- set ns.lines = ns.lines + ['', '期待状態: demo_expected=' ~ demo_expected ~ '  / (!) = 期待と異なる結果'] -%}
+          {{ ns.lines }}
+      run_once: true
+      tags: [always]
+
+    - name: 期待どおりの結果であること
+      ansible.builtin.assert:
+        that: _ng | length == 0
+        fail_msg: "期待と異なる結果: {{ _ng | join(', ') }}（demo_expected={{ demo_expected }}）"
+        success_msg: "全項目が期待どおり（demo_expected={{ demo_expected }}）"
+      vars:
+        _ng: "{{ check_results | default([]) | rejectattr('ok') | map(attribute='id') | list }}"
+      when: demo_fail_on_mismatch | bool
+      tags: [always]
