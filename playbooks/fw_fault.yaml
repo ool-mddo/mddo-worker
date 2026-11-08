@@ -1,0 +1,118 @@
+---
+# vSRX (Proxmox コンテナ上の VM) に障害を注入/復旧する
+#   mode=link   : 指定 ethN のリンクを両端で down/up
+#                 (VM 側: virtio netK の link status (K=N-1), 対向側: 対向ノードの IF を admin down/up)
+#   mode=node   : VM 停止/起動 + 全リンクの対向 IF を admin down/up (ノード障害)
+#   mode=silent : VM 一時停止/再開 (リンクは up のまま転送だけ止まる)
+# NOTE: Proxmox コンテナ側の ethN は落とさない。対向の carrier が落ちて戻ると、
+#   cRPD が connected 経路をカーネルから消したままにする (対向側で admin down/up すれば
+#   カーネルが connected 経路を作り直す) ため、対向側 IF の admin down/up で carrier を落とす。
+- hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    snapshot_name: emulated_asis
+    mode: link
+    state: down
+    interfaces: ""
+
+  tasks:
+    - name: check parameters
+      ansible.builtin.assert:
+        that:
+          - node is defined and node | length > 0
+          - mode in ['link', 'node', 'silent']
+          - state in ['down', 'up']
+          - mode != 'link' or (interfaces | length > 0)
+        fail_msg: "invalid parameters: node={{ node | default('') }}, mode={{ mode }}, state={{ state }}, interfaces={{ interfaces }}"
+
+    - name: update job_status (FW_Fault=1)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"FW_Fault_{{ mode }}_{{ state }}\",node=\"{{ node }}\",snapshot_name=\"{{ snapshot_name }}\"} 1" > /prom/textfile.prom'
+
+    - name: load topology-data.json
+      ansible.builtin.slurp:
+        src: "/clab/clab-{{ snapshot_name }}/topology-data.json"
+      register: topo_raw
+
+    - name: find target container and VMID
+      vars:
+        target_node: "{{ (topo_raw.content | b64decode | from_json).nodes[node] }}"
+      ansible.builtin.set_fact:
+        topo: "{{ topo_raw.content | b64decode | from_json }}"
+        container: "{{ target_node.labels['clab-node-longname'] }}"
+        vmid: "{{ target_node.labels.clusterid }}{{ '00' if target_node.labels.redundant == 'act' else '01' }}"
+
+    - name: find links of the target node
+      vars:
+        ep_self: "{{ item.endpoints.a if item.endpoints.a.node == node else item.endpoints.z }}"
+        ep_peer: "{{ item.endpoints.z if item.endpoints.a.node == node else item.endpoints.a }}"
+      ansible.builtin.set_fact:
+        node_links: >-
+          {{ node_links | default([]) + [{
+               'eth': ep_self.interface,
+               'peer_container': topo.nodes[ep_peer.node].labels['clab-node-longname'],
+               'peer_if': ep_peer.interface
+             }] }}
+      loop: "{{ topo.links }}"
+      when: item.endpoints.a.node == node or item.endpoints.z.node == node
+
+    - name: select target links
+      when: mode in ['link', 'node']
+      vars:
+        # EDA 経由だとカンマ区切り文字列で渡ってくる
+        eth_list: "{{ (interfaces.split(',') if interfaces is string else interfaces) | map('trim') | select | list }}"
+      ansible.builtin.set_fact:
+        target_links: "{{ node_links | selectattr('eth', 'in', eth_list) | list if mode == 'link' else node_links }}"
+
+    - name: check target links
+      when: mode == 'link'
+      ansible.builtin.assert:
+        that:
+          - target_links | length > 0
+        fail_msg: "no links found for {{ node }}:{{ interfaces }}"
+
+    - name: "link {{ state }}: {{ container }} (VMID {{ vmid }}) {{ target_links | default([]) | map(attribute='eth') | join(',') }}"
+      when: mode == 'link'
+      ansible.builtin.shell: |
+        set -e
+        {% if state == 'up' %}
+        {% for link in target_links %}
+        docker exec {{ link.peer_container }} ip link set {{ link.peer_if }} up
+        {% endfor %}
+        {% endif %}
+        # VM 側: QEMU monitor で virtio NIC の link status を変更 (netK = ethN の N-1)
+        printf '{% for link in target_links %}set_link net{{ link.eth | regex_replace('^eth', '') | int - 1 }} {{ 'off' if state == 'down' else 'on' }}\n{% endfor %}' \
+          | docker exec -i {{ container }} qm monitor {{ vmid }}
+        {% if state == 'down' %}
+        {% for link in target_links %}
+        docker exec {{ link.peer_container }} ip link set {{ link.peer_if }} down
+        {% endfor %}
+        {% endif %}
+      changed_when: true
+
+    - name: "node {{ state }}: {{ container }} (VMID {{ vmid }})"
+      when: mode == 'node'
+      ansible.builtin.shell: |
+        set -e
+        {% if state == 'down' %}
+        {% for link in target_links %}
+        docker exec {{ link.peer_container }} ip link set {{ link.peer_if }} down
+        {% endfor %}
+        docker exec {{ container }} qm stop {{ vmid }}
+        {% else %}
+        {% for link in target_links %}
+        docker exec {{ link.peer_container }} ip link set {{ link.peer_if }} up
+        {% endfor %}
+        docker exec {{ container }} qm start {{ vmid }}
+        {% endif %}
+      changed_when: true
+
+    - name: "silent {{ state }}: {{ container }} (VMID {{ vmid }})"
+      when: mode == 'silent'
+      ansible.builtin.shell: "docker exec {{ container }} qm {{ 'suspend' if state == 'down' else 'resume' }} {{ vmid }}"
+      changed_when: true
+
+    - name: update job_status (FW_Fault=0)
+      ansible.builtin.shell: 'echo "job_status{jobname=\"FW_Fault_{{ mode }}_{{ state }}\",node=\"{{ node }}\",snapshot_name=\"{{ snapshot_name }}\"} 0" > /prom/textfile.prom'
