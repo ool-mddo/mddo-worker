@@ -78,6 +78,7 @@ flowchart TB
 | `playbooks/destroy.yaml` | Containerlab環境の破棄用Playbook |
 | `playbooks/iperf.yaml` | iperfトラフィック試験ノード設定用Playbook |
 | `playbooks/ovs.yaml` | Open vSwitchブリッジのポート操作（`add-port` / `del-port`）用Playbook |
+| `playbooks/fw_fault.yaml` | vSRX（Proxmoxコンテナ上のVM）への障害注入・復旧（リンク断 / ノード障害 / サイレント障害）用Playbook |
 
 ### 1.3 Docker Compose サービス・ネットワーク・ボリューム設計 (`docker-compose.yaml`)
 
@@ -133,6 +134,7 @@ flowchart TB
 | `"ovs"` | `operate ovs bridge operation` | `run_playbook`: `/playbooks/ovs.yaml` | `network_name`, `snapshot_name`, `usecase_name`, `operation`, `bridge_name`, `port_name` |
 | `"vsrx_ha"` | `route vsrx ha deployment` | `post_event` → `parallel_vsrx_ha` ルールセットへ転送し `/playbooks/vsrx_ha.yaml` を実行 | `snapshot_name` (既定: `'emulated_asis'`), `cluster_id` (既定: `1`), `password` (既定: `'password123'`), `remote_address`, `num_if` (既定: `5`), `node_0_id` (`0`), `node_1_id` (`1`), `node_0_ip` (`'192.168.100.2/24'`), `node_1_ip` (`'192.168.100.3/24'`), `node_0_if` (`'ge-0/0/0'`), `node_1_if` (`'ge-7/0/0'`) |
 | `"vsrx_config"` | `vsrx config` | `run_playbook`: `/playbooks/vsrx_config.yaml` | `snapshot_name` (既定: `'emulated_asis'`) |
+| `"fw_fault"` | `inject/recover vsrx fault (link/node/silent)` | `run_playbook`: `/playbooks/fw_fault.yaml` | `snapshot_name` (既定: `'emulated_asis'`), `node` (必須, 例: `site-a-fw-1`), `mode` (既定: `'link'`), `state` (既定: `'down'`), `interfaces` (link時必須, 例: `'eth4,eth5'`) |
 
 ---
 
@@ -345,6 +347,30 @@ vSRXのHAクラスタ構築およびSSHポートフォワーディング設定�
    - `junipernetworks.junos.junos_config` モジュール（`connection: ansible.netcommon.netconf`, ポート `22`）を使用。
    - インベントリホスト名（`clab-<snapshot_name>-<node_name>`）からプレフィックス `clab-<snapshot_name>-` を除去し、`/clab/<node_name>.conf` を `update: merge` で読み込み・コミット。
    - コミット後に `show configuration` を実行して結果を出力。
+
+---
+
+### 4.4 `playbooks/fw_fault.yaml`（vSRXへの障害注入・復旧）
+
+vSRX HAクラスタの切り替え・切り離し試験のため、指定したvSRXノードに障害を注入/復旧します。
+vSRXのリンクは `対向ノード ⇄ veth ⇄ Proxmoxコンテナ ethN ⇄ vmbrN ⇄ tap ⇄ vSRX netK (K=N-1)` で構成され、
+Linux bridge / tap はリンク状態を伝搬しないため、リンクの両端をそれぞれ操作します。
+
+| `mode` | `state: down` | `state: up` |
+| :--- | :--- | :--- |
+| `link` | VM側: QEMU monitor (`qm monitor`) で `set_link netK off`<br/>対向側: 対向ノードのIFを `ip link set <if> down` | 対向IFを up → `set_link netK on` |
+| `node` | 全リンクの対向IFを down → `qm stop` | 全リンクの対向IFを up → `qm start` |
+| `silent` | `qm suspend`（VM一時停止。リンクはupのまま） | `qm resume` |
+
+- **対象の特定**: `/clab/clab-{{ snapshot_name }}/topology-data.json` の `nodes[node]` から
+  コンテナ名・`clusterid`・`redundant` (VMID: act=`{clusterid}00` / sby=`{clusterid}01`) を、`links` から各 `ethN` の対向ノード・IFを取得。
+- **Proxmoxコンテナ側の `ethN` は操作しない**: 対向がcRPDの場合、対向側でcarrierが落ちて戻ると、
+  cRPDがカーネルのconnected経路を消したままになる（落ちている間に同じプレフィクスのOSPF経路で置き換え、
+  復旧時にそれを削除する）。対向IFをadmin down/upすればカーネルがconnected経路を作り直すため、対向側で操作する。
+- **`qm set --netK ...,link_down=1` は使わない**: `vsrx_ha.yaml` は netK をMAC指定なしで定義しているため、
+  再指定はNICの差し替えになりうる。QEMU monitor 経由なら構成ファイルを変更しない。
+- `node` モードの `qm start` 後、vSRXの起動・クラスタ復帰には数分かかる。RG0はpreemptしないため自動では戻らない。
+- `silent` モードはクラスタからはコントロールリンク障害に見え、再開したノードは `ineligible` → `disabled` になる（Junosの仕様）。復旧には対象ノードの再起動（`qm reset {VMID}` や `node` モードの down/up）が必要。
 
 ---
 
