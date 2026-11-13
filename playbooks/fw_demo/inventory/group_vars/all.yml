@@ -1,0 +1,50 @@
+---
+# ===== デモ共通パラメータ =====
+demo_domain: demo.mddo.local
+dns_fqdn: "dns.{{ demo_domain }}"
+web_fqdn: "www.{{ demo_domain }}"
+
+# サーバの IP はインベントリから自動取得
+dns_server_host: "{{ groups['dns_servers'][0] }}"
+web_server_host: "{{ groups['web_servers'][0] }}"
+dns_server_ip: "{{ hostvars[dns_server_host].host_ip }}"
+web_server_ip: "{{ hostvars[web_server_host].host_ip }}"
+
+# DNS に登録するレコード（A と PTR を作成）
+dns_records:
+  - name: "{{ dns_fqdn }}"
+    ip: "{{ dns_server_ip }}"
+  - name: "{{ web_fqdn }}"
+    ip: "{{ web_server_ip }}"
+
+# Web ページに埋め込み、クライアント側で取得確認に使う文字列
+web_marker: MDDO-FW-DEMO
+
+# サーバ側の配置先
+demo_conf_dir: /etc/mddo-demo
+demo_web_root: /var/www/mddo-demo
+dns_log_file: /var/log/mddo-demo-dnsmasq.log
+dns_pid_file: /run/mddo-demo-dnsmasq.pid
+
+# ===== クライアント側デモの設定 =====
+# FW ポリシーの期待状態
+#   allow : site-b/c → site-a の DNS / HTTP が通ること（あるべき姿 / to-be）
+#   deny  : DNS / HTTP が FW で遮断されること（as-is 確認用）
+#   ※ping は両 FW で許可されているため常に成功を期待
+demo_expected: allow
+
+# クライアントの名前解決方法
+#   resolv_conf : /etc/resolv.conf を site-a DNS に向け、OS リゾルバ経由で curl する
+#   none        : resolv.conf は変更せず、dig の結果を curl --resolve に渡す
+client_resolver_mode: resolv_conf
+
+# タイムアウト（FW で drop された場合に長時間待たないよう短めに設定）
+dns_timeout: 2
+http_connect_timeout: 3
+http_max_time: 5
+ping_count: 3
+
+# true にするとステップごとに Enter 待ちになる（ライブデモ用）
+demo_step_pause: false
+# 期待と異なる結果があった場合に playbook を失敗扱いにする
+demo_fail_on_mismatch: true

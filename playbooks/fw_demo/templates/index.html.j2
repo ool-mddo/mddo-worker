@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>{{ web_fqdn }} - MDDO FW demo</title>
+</head>
+<body>
+  <h1>MDDO FW demo web server</h1>
+  <p id="marker">{{ web_marker }} OK - served by {{ inventory_hostname }} ({{ host_ip }})</p>
+  <ul>
+    <li>FQDN: {{ web_fqdn }}</li>
+    <li>DNS : {{ dns_fqdn }} ({{ dns_server_ip }})</li>
+  </ul>
+</body>
+</html>

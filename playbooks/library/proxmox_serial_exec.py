@@ -173,7 +173,7 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
         # 画面が4秒以上止まっている場合のみ、Enterを押して画面を更新させる
         if time.time() - last_send > 4:
             try:
-                s.sendall(b"\r\n")
+                s.sendall(b"\r")
             except Exception:
                 pass
             last_send = time.time()
@@ -183,12 +183,12 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
             
             if idx == 0:
                 time.sleep(0.5)
-                s.sendall(f"{user}\r\n".encode("utf-8"))
+                s.sendall(f"{user}\r".encode("utf-8"))
                 last_send = time.time()
             elif idx == 1:
                 time.sleep(0.5)
                 if password:
-                    s.sendall(f"{password}\r\n".encode("utf-8"))
+                    s.sendall(f"{password}\r".encode("utf-8"))
                 else:
                     raise Exception("Password required but not provided.")
                 last_send = time.time()
@@ -220,7 +220,7 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
 
     # クリア後、綺麗なプロンプトを再表示させて同期を確実に取る
     try:
-        s.sendall(b"\r\n")
+        s.sendall(b"\r")
         proc.expect(prompt_regex[2], timeout=5)
     except Exception:
         pass
@@ -230,7 +230,7 @@ def run_serial_commands(socket_path, commands, user, password, timeout, expect_r
 
     # 4. コマンドの順次実行
     for cmd in cmd_list:
-        s.sendall(cmd.encode("utf-8") + b"\r\n")
+        s.sendall(cmd.encode("utf-8") + b"\r")
         
         if expect_reboot and "reboot" in cmd:
             try:

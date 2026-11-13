@@ -167,7 +167,7 @@
 
         - name: Reset portforwarding rule in active containers before triggering
           ansible.builtin.shell: >
-            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft delete rule ip nat PREROUTING tcp dport 22 dnat to 192.168.100.2:22 || true
+            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft delete rule ip nat PREROUTING tcp dport 22 dnat to 169.254.100.2:22 || true
           loop: "{{ extracted_data }}"
           changed_when: false
 
@@ -182,6 +182,8 @@
               cluster_id: "{{ item.cluster_id }}"
               num_if: "{{ item.num_if }}"
               remote_address: "172.32.0.1"
+              node_0_ip: "169.254.100.2/24"
+              node_1_ip: "169.254.100.3/24"
           loop: "{{ extracted_data }}"
 
         - name: Show triggering result for vsrx_ha
@@ -191,10 +193,10 @@
 
         - name: Wait for vsrx_ha parallel executions to complete on all active nodes
           ansible.builtin.shell: >
-            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft list chain ip nat PREROUTING 2>/dev/null | grep -q "dnat to 192.168.100.2:22"
+            docker exec clab-{{ snapshot_name }}-{{ item.node }} nft list chain ip nat PREROUTING 2>/dev/null | grep -q "dnat to 169.254.100.2:22"
           register: nft_check
           until: nft_check.rc == 0
-          retries: 180  # 10秒 x 180回 = 最大30分待機
+          retries: 240  # 10秒 x 180回 = 最大30分待機
           delay: 10
           changed_when: false
           loop: "{{ extracted_data }}"

@@ -61,6 +61,7 @@
 
         qm stop {{ cluster_id }}00 || true
         qm destroy {{ cluster_id }}00 --purge true || true
+        rm -f /var/run/qemu-server/{{ cluster_id }}00.*
 
         # 1. OVF インポートと仮想マシン構成
         qm importovf {{ cluster_id }}00 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
@@ -128,7 +129,7 @@
     - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}00)の起動
       ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
-        ip addr add 192.168.100.1/24 dev vmbr1 || true
+        ip addr add 169.254.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
         qm start {{ cluster_id }}00
         SCRIPT_EOF
@@ -195,6 +196,7 @@
 
         qm stop {{ cluster_id }}01 || true
         qm destroy {{ cluster_id }}01 --purge true || true
+        rm -f /var/run/qemu-server/{{ cluster_id }}01.*
 
         # 1. OVF インポートと仮想マシン構成
         qm importovf {{ cluster_id }}01 /var/tmp/junos-vsrx3-x86-64.ide.ovf local --format qcow2
@@ -262,7 +264,7 @@
     - name: ネットワーク設定(IP)とVM(VMID:{{ cluster_id }}01)の起動
       ansible.builtin.shell: |
         cat << 'SCRIPT_EOF' | docker exec -i {{ item }} bash
-        ip addr add 192.168.100.1/24 dev vmbr1 || true
+        ip addr add 169.254.100.1/24 dev vmbr1 || true
         ip link set vmbr1 up || true
         qm start {{ cluster_id }}01
         SCRIPT_EOF
@@ -379,10 +381,10 @@
         nft add table ip nat
         nft add chain ip nat PREROUTING  '{ type nat hook prerouting  priority dstnat; }'
         nft add chain ip nat POSTROUTING '{ type nat hook postrouting priority srcnat; }'
-        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.2:22
-        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.2:22
-        nft add rule ip nat POSTROUTING ip daddr 192.168.100.2 tcp dport 22 masquerade
-        ping -c 2 192.168.100.2 || true # ARPテーブルの事前解決        
+        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 169.254.100.2:22
+        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 169.254.100.2:22
+        nft add rule ip nat POSTROUTING ip daddr 169.254.100.2 tcp dport 22 masquerade
+        ping -c 2 169.254.100.2 || true # ARPテーブルの事前解決        
         SCRIPT_EOF
       loop: "{{ act_target.stdout_lines }}"
       register: exec_results
@@ -395,10 +397,10 @@
         nft add table ip nat
         nft add chain ip nat PREROUTING  '{ type nat hook prerouting  priority dstnat; }'
         nft add chain ip nat POSTROUTING '{ type nat hook postrouting priority srcnat; }'
-        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.3:22
-        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 192.168.100.3:22
-        nft add rule ip nat POSTROUTING ip daddr 192.168.100.3 tcp dport 22 masquerade
-        ping -c 2 192.168.100.3 || true # ARPテーブルの事前解決        
+        nft delete rule ip nat PREROUTING  tcp dport 22 dnat to 169.254.100.3:22
+        nft add rule ip nat PREROUTING  tcp dport 22 dnat to 169.254.100.3:22
+        nft add rule ip nat POSTROUTING ip daddr 169.254.100.3 tcp dport 22 masquerade
+        ping -c 2 169.254.100.3 || true # ARPテーブルの事前解決        
         SCRIPT_EOF
       loop: "{{ sby_target.stdout_lines }}"
       register: exec_results

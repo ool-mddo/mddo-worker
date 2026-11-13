@@ -1,0 +1,60 @@
+---
+# （任意）各ホストのデータ側 IP / 経路を hosts.yml の値で設定する
+# 既に containerlab の exec 等で設定済みなら実行不要
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook 01_setup_network.yml
+#   docker exec -w /playbooks/fw_demo mddo-worker-eda-worker-1 ansible-playbook 01_setup_network.yml -e '{"host_routes":["default"]}'
+- name: インベントリ準備
+  ansible.builtin.import_playbook: 00_load_inventory.yml
+
+- name: ホストのネットワーク設定
+  hosts: lab_hosts
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  vars:
+    # GW 経由にする宛先。containerlab の mgmt 側デフォルト経路を残すため既定はラボ内アドレスのみ
+    host_routes:
+      - 192.168.0.0/16
+  tasks:
+    - name: IP アドレスと経路を設定
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - |
+            set -eu
+            ip link set dev {{ host_if }} up
+            if ip -4 -o addr show dev {{ host_if }} | grep -q " {{ host_ip }}/{{ host_prefixlen }} "; then
+              :
+            else
+              ip addr add {{ host_ip }}/{{ host_prefixlen }} dev {{ host_if }}
+              echo RESULT=changed
+            fi
+            {% for p in host_routes %}
+            if ! ip -4 route show {{ p }} | grep -q "via {{ host_gateway }} dev {{ host_if }}"; then
+              ip route replace {{ p }} via {{ host_gateway }} dev {{ host_if }}
+              echo RESULT=changed
+            fi
+            {% endfor %}
+      register: net_result
+      changed_when: "'RESULT=changed' in net_result.stdout"
+
+    - name: 設定確認
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ target_container }}"
+          - sh
+          - -c
+          - "ip -4 -br addr show dev {{ host_if }}; ip -4 route"
+      register: net_show
+      changed_when: false
+
+    - name: 設定内容
+      ansible.builtin.debug:
+        msg: "{{ net_show.stdout_lines }}"

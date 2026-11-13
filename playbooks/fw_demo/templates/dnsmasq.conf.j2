@@ -1,0 +1,20 @@
+# Managed by Ansible (mddo-fw demo) - {{ inventory_hostname }}
+port=53
+# 外部へのフォワードはしない（デモ用ドメインの権威応答のみ）
+no-resolv
+no-hosts
+no-poll
+bind-dynamic
+listen-address=127.0.0.1
+listen-address={{ host_ip }}
+user=root
+pid-file={{ dns_pid_file }}
+
+domain={{ demo_domain }}
+local=/{{ demo_domain }}/
+{% for r in dns_records %}
+host-record={{ r.name }},{{ r.ip }}
+{% endfor %}
+
+log-queries
+log-facility={{ dns_log_file }}

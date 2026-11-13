@@ -1,0 +1,22 @@
+# Managed by Ansible (mddo-fw demo) - {{ inventory_hostname }}
+server {
+    listen 80 default_server;
+    server_name {{ web_fqdn }} _;
+
+    root {{ demo_web_root }};
+    index index.html;
+
+    access_log /var/log/nginx/mddo-demo-access.log;
+    error_log  /var/log/nginx/mddo-demo-error.log;
+
+    add_header X-Served-By "{{ inventory_hostname }}" always;
+
+    location = /health {
+        default_type text/plain;
+        return 200 "ok\n";
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

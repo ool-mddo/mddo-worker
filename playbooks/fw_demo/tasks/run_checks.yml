@@ -1,0 +1,58 @@
+---
+# チェックコマンドを実行し、期待結果と比較して check_results に追記する
+# 入力:
+#   check_title : 表示用タイトル
+#   checks      : [{id, desc, cmd, expect(正規表現/省略可), policy(bool/省略可)}]
+#     - 成功条件 : rc == 0 かつ expect にマッチ
+#     - policy=true のチェックは demo_expected (allow/deny) により期待値が変わる
+# 出力:
+#   check_results : [{id, desc, success, expected, ok, detail}]
+- name: "{{ check_title }}"
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ target_container }}"
+      - sh
+      - -c
+      - "{{ item.cmd }}"
+  loop: "{{ checks }}"
+  loop_control:
+    label: "{{ item.id }}: {{ item.desc }}"
+  register: _chk
+  failed_when: false
+  changed_when: false
+
+- name: "{{ check_title }} - 判定"
+  ansible.builtin.set_fact:
+    check_results: "{{ (check_results | default([])) + [_entry] }}"
+  loop: "{{ _chk.results }}"
+  loop_control:
+    loop_var: r
+    label: "{{ r.item.id }}"
+  vars:
+    _out: "{{ ((r.stdout | default('')) ~ '\n' ~ (r.stderr | default(''))) | trim }}"
+    _success: >-
+      {{ (r.rc | default(1)) == 0
+         and (r.item.expect is not defined or (r.stdout | default('')) is search(r.item.expect, multiline=True)) }}
+    _expected: >-
+      {{ (demo_expected == 'allow') if (r.item.policy | default(false)) else true }}
+    _entry:
+      id: "{{ r.item.id }}"
+      desc: "{{ r.item.desc }}"
+      success: "{{ _success | bool }}"
+      expected: "{{ _expected | bool }}"
+      ok: "{{ (_success | bool) == (_expected | bool) }}"
+      detail: "{{ (_out.splitlines() | select | list | join(' | '))[:160] }}"
+
+- name: "{{ check_title }} - 結果"
+  ansible.builtin.debug:
+    msg: >-
+      {%- set ns = namespace(lines=[]) -%}
+      {%- for c in check_results | selectattr('id', 'in', checks | map(attribute='id') | list) -%}
+      {%- set ns.lines = ns.lines + ['[%s] %-14s 結果=%s 期待=%s  %s' | format(
+            'OK' if c.ok | bool else 'NG', c.id,
+            '成功' if c.success | bool else '失敗',
+            '成功' if c.expected | bool else '失敗', c.detail)] -%}
+      {%- endfor -%}
+      {{ ns.lines }}

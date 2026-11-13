@@ -1,0 +1,153 @@
+---
+# site-a サーバのテストシナリオ
+#   1. DNS サーバ単体テスト（プロセス / LISTEN / A・PTR・TCP・NXDOMAIN 応答）
+#   2. Web サーバ単体テスト（プロセス / LISTEN / HTTP 200 / コンテンツ / Host ヘッダ）
+#   3. site-a 内部結合テスト（FW を経由しない site-a 内でのDNS→HTTP）
+# いずれかが NG なら playbook は失敗する（クロスサイトのデモ前に切り分けるため）
+- name: インベントリ準備
+  ansible.builtin.import_playbook: 00_load_inventory.yml
+
+- name: 前回テスト結果のクリア
+  hosts: servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [always]
+  tasks:
+    - name: check_results 初期化
+      ansible.builtin.set_fact:
+        check_results: []
+
+- name: DNS サーバ単体テスト
+  hosts: dns_servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [dns]
+  vars:
+    _dig: "dig +time={{ dns_timeout }} +tries=1"
+  tasks:
+    - name: テスト実行
+      ansible.builtin.include_tasks: tasks/run_checks.yml
+      vars:
+        check_title: "DNS サーバ単体テスト ({{ inventory_hostname }} / {{ host_ip }})"
+        checks:
+          - id: proc
+            desc: dnsmasq プロセスが起動している
+            cmd: "ps -o pid=,stat=,args= -p \"$(cat {{ dns_pid_file }})\""
+            expect: "^\\s*\\d+\\s+[^Z\\s]\\S*\\s+dnsmasq"
+          - id: listen_udp53
+            desc: UDP/53 で待ち受けている
+            cmd: "ss -Hlnu 'sport = :53'"
+            expect: "{{ host_ip | regex_escape }}:53"
+          - id: listen_tcp53
+            desc: TCP/53 で待ち受けている
+            cmd: "ss -Hlnt 'sport = :53'"
+            expect: "{{ host_ip | regex_escape }}:53"
+          - id: a_local
+            desc: "localhost で {{ web_fqdn }} の A レコードを解決"
+            cmd: "{{ _dig }} @127.0.0.1 {{ web_fqdn }} A +short"
+            expect: "^{{ web_server_ip | regex_escape }}$"
+          - id: a_dns
+            desc: "サービス IP で {{ dns_fqdn }} の A レコードを解決"
+            cmd: "{{ _dig }} @{{ host_ip }} {{ dns_fqdn }} A +short"
+            expect: "^{{ dns_server_ip | regex_escape }}$"
+          - id: a_tcp
+            desc: TCP での問い合わせに応答する
+            cmd: "{{ _dig }} +tcp @{{ host_ip }} {{ web_fqdn }} A +short"
+            expect: "^{{ web_server_ip | regex_escape }}$"
+          - id: ptr
+            desc: "{{ web_server_ip }} の逆引き"
+            cmd: "{{ _dig }} @{{ host_ip }} -x {{ web_server_ip }} +short"
+            expect: "^{{ web_fqdn | regex_escape }}\\.$"
+          - id: nxdomain
+            desc: 未登録名は NXDOMAIN を返す
+            cmd: "{{ _dig }} @{{ host_ip }} nothing.{{ demo_domain }} A | grep 'status:'"
+            expect: "status: NXDOMAIN"
+
+- name: Web サーバ単体テスト
+  hosts: web_servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [web]
+  vars:
+    _curl: "curl -sS --connect-timeout {{ http_connect_timeout }} --max-time {{ http_max_time }}"
+  tasks:
+    - name: テスト実行
+      ansible.builtin.include_tasks: tasks/run_checks.yml
+      vars:
+        check_title: "Web サーバ単体テスト ({{ inventory_hostname }} / {{ host_ip }})"
+        checks:
+          - id: proc
+            desc: nginx プロセスが起動している
+            cmd: "ps -C nginx -o pid=,stat=,args="
+            expect: "^\\s*\\d+\\s+[^Z\\s]\\S*\\s+nginx: master"
+          - id: listen_tcp80
+            desc: TCP/80 で待ち受けている
+            cmd: "ss -Hlnt 'sport = :80'"
+            expect: ":80"
+          - id: http_local
+            desc: localhost への GET が 200
+            cmd: "{{ _curl }} -o /dev/null -w 'http_code=%{http_code}' http://127.0.0.1/"
+            expect: "http_code=200"
+          - id: http_content
+            desc: サービス IP への GET でデモページが返る
+            cmd: "{{ _curl }} http://{{ host_ip }}/ | grep -o '{{ web_marker }}[^<]*'"
+            expect: "{{ web_marker }}"
+          - id: http_vhost
+            desc: "Host: {{ web_fqdn }} で応答する"
+            cmd: "{{ _curl }} -H 'Host: {{ web_fqdn }}' -D - -o /dev/null http://{{ host_ip }}/ | grep -i -e '^HTTP/' -e '^X-Served-By'"
+            expect: "X-Served-By: {{ inventory_hostname }}"
+          - id: health
+            desc: /health が ok を返す
+            cmd: "{{ _curl }} http://{{ host_ip }}/health"
+            expect: "^ok$"
+
+- name: site-a 内部結合テスト（FW 非経由）
+  hosts: servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [integration]
+  vars:
+    _curl: "curl -sS --connect-timeout {{ http_connect_timeout }} --max-time {{ http_max_time }}"
+  tasks:
+    - name: テスト実行
+      ansible.builtin.include_tasks: tasks/run_checks.yml
+      vars:
+        check_title: "site-a 内部結合テスト ({{ inventory_hostname }})"
+        checks:
+          - id: int_dns
+            desc: "site-a DNS ({{ dns_server_ip }}) で {{ web_fqdn }} を解決"
+            cmd: "dig +time={{ dns_timeout }} +tries=1 @{{ dns_server_ip }} {{ web_fqdn }} A +short"
+            expect: "^{{ web_server_ip | regex_escape }}$"
+          - id: int_http
+            desc: "DNS で解決した IP で http://{{ web_fqdn }}/ を GET"
+            cmd: >-
+              ip=$(dig +time={{ dns_timeout }} +tries=1 @{{ dns_server_ip }} {{ web_fqdn }} A +short | grep -E '^[0-9.]+$' | head -n1);
+              [ -n "$ip" ] || { echo 'DNS 解決失敗'; exit 1; };
+              {{ _curl }} --resolve "{{ web_fqdn }}:80:$ip" -o /tmp/mddo-demo-index.html
+              -w 'http_code=%{http_code} remote_ip=%{remote_ip}\n' http://{{ web_fqdn }}/
+              && grep -o '{{ web_marker }}[^<]*' /tmp/mddo-demo-index.html
+            expect: "http_code=200[\\s\\S]*{{ web_marker }}"
+
+- name: サーバテスト判定
+  hosts: servers
+  gather_facts: false
+  vars_files:
+    - inventory/group_vars/all.yml
+    - inventory/group_vars/lab_hosts.yml
+  tags: [always]
+  tasks:
+    - name: NG が無いこと
+      ansible.builtin.assert:
+        that: _ng | length == 0
+        fail_msg: "NG: {{ _ng | join(', ') }}"
+        success_msg: "全 {{ check_results | default([]) | length }} 項目 OK"
+      vars:
+        _ng: "{{ check_results | default([]) | rejectattr('ok') | map(attribute='id') | list }}"

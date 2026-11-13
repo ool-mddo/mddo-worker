@@ -1,0 +1,20 @@
+---
+# ===== 接続設定 =====
+# mddo-worker-eda-worker-1 からは local 接続 + docker exec でコンテナを操作する
+# （community.docker コレクションやコンテナ内の sshd / python は不要）
+ansible_connection: local
+ansible_python_interpreter: "{{ ansible_playbook_python }}"
+
+# containerlab のラボ名は snapshot_name 指定 → /clab/clab-topo.yaml の name → 'emulated_asis' の順で解決
+_detected_clab_name: >-
+  {{
+    (
+      lookup('ansible.builtin.file', '/clab/clab-topo.yaml', errors='ignore')
+      | default('', true)
+      | from_yaml
+      | default({}, true)
+    ).get('name', 'emulated_asis')
+  }}
+_effective_snapshot_name: "{{ (snapshot_name | default('', true) | string | trim) or (_detected_clab_name | trim) }}"
+clab_prefix: "clab-{{ _effective_snapshot_name }}"
+target_container: "{{ container_name | default(clab_prefix ~ '-' ~ inventory_hostname) }}"

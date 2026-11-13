@@ -1,0 +1,29 @@
+---
+# python の無いコンテナへ docker exec (sh) でファイルを配置する（内容が同じなら changed にしない）
+# 入力: put_files = [{dest, content, mode(省略可)}]
+# 出力: put_files_result（いずれかが変更されれば .changed == true）
+- name: ファイル配置
+  ansible.builtin.command:
+    argv:
+      - docker
+      - exec
+      - "{{ target_container }}"
+      - sh
+      - -c
+      - |
+        set -eu
+        d={{ item.dest | quote }}
+        mkdir -p "$(dirname "$d")"
+        t="$d.ansible-tmp.$$"
+        printf '%s' {{ item.content | quote }} > "$t"
+        chmod {{ item.mode | default('0644') }} "$t"
+        if [ -f "$d" ] && [ "$(md5sum < "$t")" = "$(md5sum < "$d")" ]; then
+          rm -f "$t"; echo RESULT=unchanged
+        else
+          mv -f "$t" "$d"; echo RESULT=changed
+        fi
+  loop: "{{ put_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  register: put_files_result
+  changed_when: "'RESULT=changed' in put_files_result.stdout"
