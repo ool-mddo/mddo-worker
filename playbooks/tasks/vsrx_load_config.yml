@@ -1,0 +1,29 @@
+---
+- name: "Load configuration from a local file and commit (attempt {{ attempt_num }}/{{ vsrx_config_retries }})"
+  when: not (vsrx_config_applied | default(false) | bool)
+  block:
+    - name: Load configuration from a local file and commit
+      juniper.device.junos_config:
+        backup: true
+        update: merge
+        src: "{{ vsrx_config_src }}"
+        src_format: text
+        comment: updating config using Ansible
+      register: response
+
+    - name: Mark Junos configuration as applied
+      ansible.builtin.set_fact:
+        vsrx_config_applied: true
+  rescue:
+    - name: Fail when all configuration load attempts are exhausted
+      ansible.builtin.fail:
+        msg: >-
+          Failed to load Junos configuration from {{ vsrx_config_src }}
+          after {{ attempt_num }} attempts:
+          {{ ansible_failed_result.msg | default(ansible_failed_result) }}
+      when: (attempt_num | int) >= (vsrx_config_retries | int)
+
+    - name: Wait before retrying Junos configuration load
+      ansible.builtin.wait_for:
+        timeout: "{{ vsrx_config_retry_delay | int }}"
+      delegate_to: localhost

@@ -37,6 +37,7 @@
           - "cluster_{{ item.value.labels.clusterid | default('') }}"
         redundant: "{{ item.value.labels.redundant | default('') }}"
         clusterid: "{{ item.value.labels.clusterid | default('') }}"
+        node_name: "{{ item.value.labels['clab-node-name'] | default(item.value.shortname | default(item.key)) }}"
       loop: "{{ (topo_raw.content | b64decode | from_json).nodes | dict2items }}"
       when:
         - item.value.labels is defined
@@ -62,6 +63,9 @@
  
   vars:
     snapshot_name: emulated_asis
+    vsrx_config_retries: 6
+    vsrx_config_retry_delay: 15
+    ansible_network_import_modules: false
     ansible_command_timeout: 120
     ansible_connect_timeout: 120
     ansible_port: 22
@@ -83,19 +87,41 @@
       # 複数台への実行時でも、インストール処理は最初の1回だけ実行させる
       run_once: true
 
-    - name: Load configuration from a local file and commit
-      juniper.device.junos_config:
-        backup: true
-        update: merge
-        # inventory_hostname (例: clab-emulated-site-a-fw-1) から
-        # 先頭の 'clab-emulated-' を削除し、末尾に '.conf' を付与してパスを組み立てる
-        src: "/clab/{{ inventory_hostname | regex_replace('^clab-' ~ snapshot_name ~ '-', '') }}.conf"
-        src_format: text
-        comment: updating config using Ansible
-      register: response
-      until: response is succeeded
-      retries: 6
+    - name: Resolve local Junos config file path
+      ansible.builtin.set_fact:
+        vsrx_config_src: "/clab/{{ node_name | default(inventory_hostname | regex_replace('^clab-' ~ snapshot_name ~ '-', '')) }}.conf"
+        vsrx_config_applied: false
+      when: redundant == 'act'
+
+    - name: Check that local Junos config file exists
+      ansible.builtin.stat:
+        path: "{{ vsrx_config_src }}"
+      delegate_to: localhost
+      register: vsrx_config_stat
+      when: redundant == 'act'
+
+    - name: Assert local Junos config file exists
+      ansible.builtin.assert:
+        that:
+          - vsrx_config_stat.stat.exists
+        fail_msg: "Config file not found on controller: {{ vsrx_config_src }}"
+      when: redundant == 'act'
+
+    - name: Wait for vSRX NETCONF service to be ready
+      juniper.device.junos_command:
+        commands:
+          - show system uptime
+      register: netconf_ready
+      until: netconf_ready is succeeded
+      retries: 10
       delay: 15
+      when: redundant == 'act'
+
+    - name: Load configuration from a local file and commit (with safe retry)
+      ansible.builtin.include_tasks: tasks/vsrx_load_config.yml
+      loop: "{{ range(1, (vsrx_config_retries | int) + 1) | list }}"
+      loop_control:
+        loop_var: attempt_num
       when: redundant == 'act'
 
     - name: Run show configuration
